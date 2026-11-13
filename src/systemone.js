@@ -208,7 +208,7 @@ function s1Sink(newId) {
   return sink;
 }
 
-function s1LevelValue(level) {
+export function s1LevelValue(level) {
   if (level.source !== undefined) return level.source;
   if (level.label !== undefined) {
     const description = contentToText(level.description, "A score level");
@@ -271,7 +271,8 @@ function s1FillInstructions(questions) {
 export function s1Encode(ir, upstreamDialect, model, newId, options) {
   const fill = !!(options && options.fillInstructions);
   const allowed = S1_DIALECT_FIELDS[upstreamDialect] || S1_DIALECT_FIELDS.typesafe;
-  const sameFamily = ir.source.family === "systemone" && ir.passthrough;
+  // A Databricks body is System One's state and questions, so it goes as written too.
+  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough;
   const body = { model: model };
   let multipart = null;
   let images = false;
@@ -378,7 +379,7 @@ export function s1Parse(body, ir) {
 
 // ---- client renderer --------------------------------------------------------
 
-function s1RenderAnswer(answer, question, dialect) {
+export function s1RenderAnswer(answer, question, dialect) {
   if (answer.type === "refusal") return { type: "refusal" };
   if (answer.type === "other") return answer.raw;
   if (answer.type === "noul") {

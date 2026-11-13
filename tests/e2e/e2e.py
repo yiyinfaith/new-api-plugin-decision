@@ -139,13 +139,22 @@ def body_for(client, model):
             "wants_refund": {"type": "boolean", "instructions": "Does the customer want a refund?"},
             "request": {"type": "choice", "criteria": {"refund": "Money back", "replacement": "New mug"}},
             "severity": {"type": "score", "criteria": LEVELS}}}
+    if client == "databricks":
+        return {"model": model, "state": {"ticket": TEXT}, "questions": {
+            "wants_refund": {"type": "noul", "instructions": "Does the customer want a refund?"},
+            "request": {"type": "choice", "instructions": "What does the customer want?", "criteria": {"refund": "Money back", "replacement": "New mug", "other": None}},
+            "severity": {"type": "score", "instructions": "How severe?", "criteria": LEVELS}}, "options": {"version": "1.0"}}
     raise ValueError(client)
 
 
-PATHS = {"systemone": "/v1/systemone", "openai": "/v1/decisions", "gemini": "/v1beta/decisions", "vercel": "/v1/evaluate"}
+PATHS = {"systemone": "/v1/systemone", "openai": "/v1/decisions", "gemini": "/v1beta/decisions", "vercel": "/v1/evaluate", "databricks": "/api/2.0/ai-functions/ai-decide"}
 
 
 def shape_ok(client, reply):
+    if client == "databricks":
+        a = (reply.get("response") or {}).get("answers") or {}
+        return sorted(a.keys()) == ["request", "severity", "wants_refund"] and a["wants_refund"] == {"type": "noul", "probability": 0.8} \
+            and a["request"]["choice"] == "refund" and reply.get("metadata") == {"version": "1.0"} and "usage" not in reply
     if client == "openai":
         a = reply.get("answers")
         return isinstance(a, list) and a[0]["type"] == "predicate" and a[1]["choice"] == "refund" and a[2]["type"] == "score" and "input_tokens" in reply["usage"]
@@ -198,6 +207,18 @@ def expected_quota(model, total, cached, written):
     return round(usd * QUOTA_PER_USD)
 
 
+def set_task_prices(admin, exprs):
+    """Model-level task expressions; modes are dropped first so the expression map can shrink."""
+    admin.option("billing_setting.billing_mode", {})
+    admin.option("billing_setting.billing_expr", exprs)
+    admin.option("billing_setting.billing_mode", {m: "tiered_expr" for m in exprs})
+
+
+def last_received():
+    items = received()
+    return json.dumps(items[-1], sort_keys=True) if items else ""
+
+
 def main():
     plugin_source = open(sys.argv[1], encoding="utf-8").read()
     admin = Admin()
@@ -208,29 +229,33 @@ def main():
     time.sleep(2)
 
     s1 = admin.channel({"name": "e2e-systemone", "type": 61, "key": "upstream-key-s1", "base_url": MOCK, "status": 1, "priority": 10,
-                        "models": "jev-latest,jev-1.14.0,jev-preview,jev,liquid/d1",
-                        "model_mapping": json.dumps({"liquid/d1": "decision-custom", "jev-preview": "fail-401", "jev": "missing-usage"}),
+                        "models": "jev-latest,jev-1.14.0,jev-preview,jev,liquid/d1,ratio-model",
+                        "model_mapping": json.dumps({"liquid/d1": "decision-custom", "ratio-model": "decision-custom", "jev-preview": "fail-401", "jev": "missing-usage"}),
                         "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "systemone"}})})
     oa = admin.channel({"name": "e2e-openai", "type": 61, "key": "upstream-key-oa", "base_url": MOCK, "status": 1, "priority": 10, "models": "gpt-6-luna",
                         "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "openai"}})})
     gm = admin.channel({"name": "e2e-gemini", "type": 61, "key": "upstream-key-gm", "base_url": MOCK, "status": 1, "priority": 10, "models": "gemini-decision-1",
                         "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "gemini"}})})
+    dbx = admin.channel({"name": "e2e-databricks", "type": 61, "key": "upstream-key-dbx", "base_url": MOCK, "status": 1, "priority": 10,
+                         "models": "databricks-decide,dbx-expr,dbx-tokens,dbx-fail",
+                         "model_mapping": json.dumps({m: "decision-custom" for m in ["databricks-decide", "dbx-expr", "dbx-tokens", "dbx-fail"]}),
+                         "setting": json.dumps({"task_plugin_key": "decision"}),
+                         "settings": json.dumps({"plugin_config": {"protocol": "databricks", "modelPaths": {"dbx-fail": "/api/2.0/ai-functions/ai-decide?fail=403"}}})})
     admin.channel({"name": "e2e-chat", "type": 1, "key": "upstream-key-chat", "base_url": MOCK, "status": 1, "models": "gpt-6-luna"})
     if len(sys.argv) > 2:
         admin.channel({"name": "e2e-typesafe", "type": 61, "key": "upstream-key-ts", "base_url": MOCK, "status": 1, "models": "jev-1.13.0",
                        "setting": json.dumps({"task_plugin_key": "typesafe"})})
-    print("channels", s1, oa, gm)
+    print("channels", s1, oa, gm, dbx)
 
     jev = 'tier("base", u("input_tokens") * 0.042 / 1000000)'
-    admin.option("ModelRatio", {"gpt-6-luna": 0.05})
+    admin.option("ModelRatio", {"gpt-6-luna": 0.05, "ratio-model": 0.021})
+    admin.option("ModelPrice", {"databricks-decide": 0.002, "dbx-fail": 0.002})
     admin.option("CompletionRatio", {"gpt-6-luna": 5})
     admin.option("CacheRatio", {"gpt-6-luna": 0.1})
     exprs = {m: jev for m in ["jev-latest", "jev-1.14.0", "jev-preview", "jev", "jev-1.13.0"]}
     exprs["gemini-decision-1"] = 'tier("base", u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.01 / 1000000)'
     exprs["decision-custom"] = 'tier("base", u("input_tokens") * 1 / 1000000)'
-    admin.option("billing_setting.billing_mode", {})  # re-runnable: drop modes left by earlier runs
-    admin.option("billing_setting.billing_expr", exprs)
-    admin.option("billing_setting.billing_mode", {m: "tiered_expr" for m in exprs})
+    set_task_prices(admin, exprs)
     luna = 'u("long_context") ? tier("long", (u("input_tokens") * 0.20 + u("cache_read_tokens") * 0.02 + u("cache_write_tokens") * 0.25) / 1000000) : tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01 + u("cache_write_tokens") * 0.125) / 1000000)'
     admin.option("billing_setting.plugin_billing_expr", {"decision::gpt-6-luna": luna})
     token = admin.token("e2e-" + uuid.uuid4().hex[:6])
@@ -321,6 +346,50 @@ def main():
         status2, _ = call(token, "/typesafe/v1/systemone", body_for("systemone", "jev-latest"))
         check("/typesafe/ prefix belongs to the TypeSafe plugin while it is installed", status2 == 503, status2)
         check("TypeSafe plugin keeps its own channels", status == 200 and log and '"key":"typesafe"' in (log.get("other") or "").replace(" ", ""), (status, reply, log and log.get("other", "")[:300]))
+
+    # 10. Databricks ai-decide. Without an expression of its own a custom name
+    # takes the expression of the slot it maps to, so the slot's is removed here.
+    exprs.pop("decision-custom")
+    exprs["dbx-expr"] = 'tier("base", u("requests") * 0.003)'
+    exprs["dbx-tokens"] = jev
+    set_task_prices(admin, exprs)
+    time.sleep(3)
+    for path in ["/api/2.0/ai-functions/ai-decide", "/decision/api/2.0/ai-functions/ai-decide"]:
+        status, reply = call(token, path, body_for("databricks", "jev-latest"))
+        check(f"{path}: Databricks client -> System One", status == 200 and shape_ok("databricks", reply), (status, reply))
+    total, cached, written = upstream_usage("jev-latest")
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("Databricks client on a token upstream is billed by tokens", log and log["model_name"] == "jev-latest" and abs(log["quota"] - expected_quota("jev-latest", total, cached, written)) <= 1, log)
+
+    status, reply = call(token, "/v1/decisions", body_for("openai", "databricks-decide"))
+    sent = received()[-1]
+    check("OpenAI client -> ai-decide upstream", status == 200 and shape_ok("openai", {**reply, "usage": {"input_tokens": 0}}) and reply["usage"]["input_tokens"] == 0, (status, reply))
+    check("ai-decide request: documented path, no model", sent["path"] == "/api/2.0/ai-functions/ai-decide" and "model" not in sent["body"] and sent["headers"].get("authorization") == "Bearer upstream-key-dbx", {k: sent.get(k) for k in ("path", "body")})
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("ai-decide with a fixed per-call model price: charged that price", log and log["model_name"] == "databricks-decide" and log["quota"] == round(0.002 * QUOTA_PER_USD), log)
+
+    status, reply = call(token, "/api/2.0/ai-functions/ai-decide", body_for("databricks", "dbx-expr"))
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("ai-decide with a per-request task expression: charged u(requests)", status == 200 and shape_ok("databricks", reply) and log and log["model_name"] == "dbx-expr" and log["quota"] == round(0.003 * QUOTA_PER_USD), (status, log))
+
+    before, mark = admin.last_log(), last_received()
+    status, reply = call(token, "/api/2.0/ai-functions/ai-decide", body_for("databricks", "dbx-tokens"))
+    check("ai-decide under a token expression is refused, not billed as free", status == 400 and last_received() == mark, (status, reply))
+    status, reply = call(token, "/api/2.0/ai-functions/ai-decide", body_for("databricks", "dbx-fail"))
+    check("ai-decide upstream error in Databricks format", status == 403 and reply == {"error_code": "PERMISSION_DENIED", "message": "mock 403"}, (status, reply))
+
+    # 11. Ratio pricing: the host charges task requests a flat half of the ratio,
+    # so the plugin refuses it before anything is sent or charged.
+    mark = last_received()
+    status, reply = call(token, "/v1/systemone", body_for("systemone", "ratio-model"))
+    # New API replaces the plugin's explanation with a generic message here.
+    check("ratio-priced decision model is refused before the upstream", status == 400 and reply == {"detail": "plugin usage hook failed"} and last_received() == mark, (status, reply))
+    time.sleep(0.6)
+    after = admin.last_log()
+    check("refused requests are not charged", (after or {}).get("id") == (before or {}).get("id"), (before and before.get("id"), after and after.get("id")))
 
     print(f"\n{len(FAILED)} failed")
     for name in FAILED:

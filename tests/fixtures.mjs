@@ -75,6 +75,19 @@ export const CLIENT_BODIES = {
       },
     },
   },
+  databricks: {
+    path: "/api/2.0/ai-functions/ai-decide",
+    body: {
+      model: "jev-latest",
+      state: { ticket: TEXT, channel: "email" },
+      questions: {
+        wants_refund: { type: "noul", instructions: "Does the customer want a refund?", criteria: { true: "Asks for money back", false: "Does not" } },
+        request: { type: "choice", instructions: "What does the customer want?", criteria: { refund: "Wants the money back", replacement: "Wants a new mug", other: null } },
+        severity: { type: "score", instructions: "How severe is the damage?", criteria: LEVELS },
+      },
+      options: { version: "1.0" },
+    },
+  },
   scaledown: {
     path: "/v1/scaledown",
     body: {

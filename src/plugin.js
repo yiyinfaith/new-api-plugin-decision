@@ -2,13 +2,13 @@
 // Request:  client body -> client decoder -> Decision IR -> upstream encoder -> upstream
 // Response: upstream reply -> upstream parser -> answers/usage IR -> client renderer
 
-import { DEFAULT_EXAMPLES, DEFAULT_SCHEMA, SPECIAL_BILLING, reservationFacts, usageFacts, usageFromTaskData } from "./billing.js";
+import { DEFAULT_EXAMPLES, DEFAULT_SCHEMA, SPECIAL_BILLING, billingProfile, requestFacts, reservationFacts, usageFacts, usageFromTaskData } from "./billing.js";
 import { CHANNEL_CONFIG, CUSTOM_SLOT, resolveChannel } from "./channel.js";
 import { toDecisionError } from "./ir.js";
-import { CLIENTS, CLIENT_ROUTES, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
+import { CLIENTS, CLIENT_ROUTES, UPSTREAMS, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
 import { fail, headerValue, isObject } from "./util.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 // Declared models. Any other name works through the channel's model mapping:
 // map it to decision-custom (the client's name is sent upstream) or to one of
@@ -43,6 +43,7 @@ const DECODERS = {
   openai: "decodeOpenAI",
   gemini: "decodeGemini",
   vercel: "decodeEvaluate",
+  databricks: "decodeDatabricks",
 };
 
 export const meta = {
@@ -151,7 +152,7 @@ function submitRequest(ctx) {
   const prepared = prepare(ctx);
   const ir = prepared.ir;
   const route = prepared.route;
-  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions });
+  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel });
   const headers = { Accept: "application/json" };
   for (const name of Object.keys(route.headers)) headers[name] = route.headers[name];
   if (route.upstream.family === "systemone") {
@@ -197,23 +198,40 @@ function submitResult(ctx, response) {
   };
 }
 
+// The host asks for billing ratios only on its per-call path, taken when the
+// model has no task expression: a fixed per-call price, or a ratio, which the
+// host turns into a flat charge of half the ratio in dollars per request and
+// never settles by tokens. Neither bills tokens, so a token upstream refuses
+// it; an upstream without token usage takes the fixed per-call price as is.
+function perCallRefusal(ctx) {
+  const model = ctx.model;
+  if (billingProfile(ctx.upstreamModel || model, model))
+    return (
+      "Model " + model + " has no decision price. Its model price bills chat; set the plugin price decision::" + model +
+      ' with a usage expression such as tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01 + u("cache_write_tokens") * 0.125) / 1000000)'
+    );
+  return (
+    "Model " + model + " is priced per call or by ratio, which cannot bill decision tokens. Set its model price to a task expression that reads the token usage, " +
+    'such as tier("base", u("input_tokens") * 0.042 / 1000000)'
+  );
+}
+
 export function extractUsage(ctx) {
   return run(function () {
     const prepared = prepare(ctx);
-    // The host asks for billing ratios only on its legacy per-call path: the
-    // model has no task expression and would be charged a flat or chat price
-    // (a ratio-priced chat model such as gpt-6-luna, or an unpriced model in
-    // self-use mode). Decisions are billed by tokens, so refuse instead.
-    if (ctx.usagePurpose === "billing_ratios")
-      fail(
-        "Model " + ctx.model + " has no task price. Set a task usage expression for it, or for decision::" + ctx.model + " when the model also serves chat; a flat per-request price is tier(\"base\", 0.001)",
-        "model_price_error",
-      );
+    if (ctx.usagePurpose === "billing_ratios") {
+      if (prepared.route.upstream.noUsage) return null;
+      fail(perCallRefusal(ctx), "model_price_error");
+    }
     return reservationFacts(prepared.ir, ctx.files || [], prepared.route, longContext(ctx), ctx.upstreamModel || ctx.model, ctx.model);
   });
 }
 
 export function extractUsageOnComplete(ctx, result, data) {
+  // An upstream without token usage is billed per successful request; the
+  // protocol was recorded by parseSubmitResponse, never by the client.
+  const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
+  if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
   // Throwing keeps the reservation and makes the host log invalid usage; a
   // reply without usage is never billed as free.
@@ -258,6 +276,7 @@ export const native = {
   decodeOpenAI: decodeAs("openai"),
   decodeGemini: decodeAs("gemini"),
   decodeEvaluate: decodeAs("vercel"),
+  decodeDatabricks: decodeAs("databricks"),
   renderDecision: function (ctx, task) {
     if (!isObject(task.data) || task.data.response === undefined) throw new Error("The decision result is unavailable");
     return task.data.response;

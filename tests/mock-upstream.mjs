@@ -224,6 +224,42 @@ function vercel(headers, body, sdk) {
   return reply;
 }
 
+// ---- Databricks ai-decide (no model, no usage) ------------------------------
+// Under /decision/ it stands in for another New API, whose gateway needs a model.
+function databricks(path, headers, body, gateway) {
+  const err = (message) => reject(400, { error_code: "INVALID_PARAMETER_VALUE", message });
+  const auth = header(headers, "Authorization");
+  if (typeof auth !== "string" || !auth.startsWith("Bearer ")) reject(401, { error_code: "UNAUTHENTICATED", message: "Credential was not sent" });
+  const fail = /[?&]fail=(\d{3})/.exec(path);
+  if (fail) reject(Number(fail[1]), { error_code: Number(fail[1]) === 429 ? "RESOURCE_EXHAUSTED" : "PERMISSION_DENIED", message: "mock " + fail[1] });
+  if (!isObj(body)) err("body");
+  if (gateway && typeof body.model !== "string") err("model is required");
+  for (const key of Object.keys(body)) if (!["state", "questions", "options"].concat(gateway ? ["model"] : []).includes(key)) err("Unknown field " + key);
+  if (body.state === undefined || body.state === null || (typeof body.state !== "string" && typeof body.state !== "object")) err("state");
+  if (body.options !== undefined && (!isObj(body.options) || Object.keys(body.options).some((k) => k !== "version") || body.options.version !== "1.0")) err("options");
+  if (!isObj(body.questions) || !Object.keys(body.questions).length) err("questions");
+  const blank = (v) => v === null || v === undefined || (typeof v === "string" && !v.trim()) || (Array.isArray(v) && !v.length) || (isObj(v) && !Object.keys(v).length);
+  const answers = {};
+  for (const [id, q] of Object.entries(body.questions)) {
+    for (const key of Object.keys(q)) if (!["type", "instructions", "criteria"].includes(key)) err("Unknown member " + key);
+    if (q.instructions === undefined || q.instructions === null) err("instructions required for " + id);
+    if (q.type === "noul") {
+      if (q.criteria !== undefined && (!isObj(q.criteria) || Object.keys(q.criteria).some((k) => k !== "true" && k !== "false") || Object.values(q.criteria).some((v) => v === null))) err("noul criteria");
+      answers[id] = { type: "noul", probability: 0.8 };
+    } else if (q.type === "choice") {
+      if (!isObj(q.criteria) || !Object.keys(q.criteria).length || Object.keys(q.criteria).length > 255) err("choice criteria 1-255");
+      const keys = Object.keys(q.criteria);
+      const p = spread(keys.length);
+      answers[id] = { type: "choice", choice: keys[0], probabilities: Object.fromEntries(keys.map((k, i) => [k, p[i]])), confidence: 0.55 };
+    } else if (q.type === "score") {
+      if (!Array.isArray(q.criteria) || q.criteria.length < 2 || q.criteria.length > 10 || q.criteria.some(blank)) err("score criteria 2-10");
+      const p = spread(q.criteria.length);
+      answers[id] = { type: "score", score: p.reduce((s, v, i) => s + v * i, 0), probabilities: Object.fromEntries(p.map((v, i) => [String(i), v])), legend: Object.fromEntries(q.criteria.map((c, i) => [String(i), c])), confidence: 0.5 };
+    } else err("unknown type " + q.type);
+  }
+  return { response: { answers }, metadata: { version: "1.0" } };
+}
+
 export function handle(path, headers, body) {
   const record = { path, headers, body };
   received.push(record);
@@ -244,6 +280,7 @@ export function handle(path, headers, body) {
     else if (clean.endsWith("/v1beta/decisions")) reply = gemini(headers, body);
     else if (clean.endsWith("/v4/ai/evaluation-model")) reply = vercel(headers, body, true);
     else if (clean.endsWith("/v1/evaluate")) reply = vercel(headers, body, false);
+    else if (clean.endsWith("/ai-functions/ai-decide")) reply = databricks(path, headers, body, clean.startsWith("/decision/"));
     else if (clean.endsWith("/decisions")) reply = openAI(headers, body);
     else if (clean.includes("/cloudflare/")) reply = { result: systemOne(headers, body, "typesafe"), success: true, errors: [], messages: [] };
     else reply = { echo: body };

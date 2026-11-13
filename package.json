@@ -1,6 +1,6 @@
 {
   "name": "new-api-plugin-decision",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Universal decision model gateway plugin for New API",
   "license": "AGPL-3.0-only",

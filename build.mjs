@@ -1,13 +1,13 @@
 // Bundles src/ into the single-file plugin.js that New API loads.
 // node build.mjs          write plugin.js
 // node build.mjs --check  fail when plugin.js is not the build of src/
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 // Dependency order; plugin.js is the entry and keeps its exports.
-const MODULES = ["util.js", "ir.js", "systemone.js", "openai.js", "gemini.js", "vercel.js", "protocols.js", "channel.js", "billing.js", "plugin.js"];
+const MODULES = ["util.js", "ir.js", "systemone.js", "databricks.js", "openai.js", "gemini.js", "vercel.js", "protocols.js", "channel.js", "billing.js", "plugin.js"];
 
 const HEADER = `// Decision — New API decision model gateway (task plugin, API v1).
 // https://github.com/yiyinfaith/new-api-plugin-decision
@@ -21,6 +21,8 @@ const IMPORT = /^import\s[\s\S]*?\sfrom\s+"\.\/[^"]+\.js";[ \t]*\r?\n/gm;
 const DECLARATION = /^(?:export\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm;
 
 export function build() {
+  const missing = readdirSync(join(root, "src")).filter((name) => name.endsWith(".js") && !MODULES.includes(name));
+  if (missing.length) throw new Error("src/" + missing.join(", src/") + " is not in the bundle's module list");
   const seen = new Map();
   const chunks = [HEADER];
   for (const name of MODULES) {

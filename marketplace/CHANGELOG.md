@@ -1,24 +1,30 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.0"
+version: "1.0.1"
 locale: "en"
 translations:
   zh-CN: CHANGELOG.zh-CN.md
 ---
 # Changelog
 
-## [1.0.0]
+## [1.0.1]
 
 ### Added
 
-- Call decision models in seven client formats: TypeSafe System One, OpenRouter, ScaleDown, OpenAI Decisions, Gemini Decisions, Vercel Evaluation, and the System One-shaped `/v1/decisions` that Perplexity and Inception use. Every path is also served under `/decision`.
-- Send each channel's requests as System One, OpenRouter, OpenAI Decisions, Gemini Decisions or Vercel Evaluation, with replies converted back to the client's format.
-- Choose the upstream protocol, path and key header per channel, and the protocol, path and upstream model ID per model.
-- Use any model name by mapping it to `decision-custom` on the channel.
-- Price input, cached input, cache writes and output separately. `gpt-6-luna` models get a long-context field instead of an output field, so their decision price can stay apart from their chat price.
-- Keep everything the official TypeSafe plugin offers: four question types, images as base64 or SDK uploads, the long-context header, TypeSafe error replies and member order.
+- Call Databricks ai-decide. Clients can send its format to `POST /api/2.0/ai-functions/ai-decide` with a `model` for routing, and channels can use the `databricks` upstream protocol. The upstream request carries no model.
+- Price a model per request with the new `requests` usage field, which is 1 for each successful request. ai-decide reports no tokens, so it reports only this field and is billed per request. Failed requests are not charged.
+
+### Changed
+
+- Only `gpt-6-luna` models need the plugin override `decision::<model>`. `gemini-decision-1`, Jev and every other model use their model-level task expression.
+- A model priced by ratio is still refused, as is one with a fixed per-call price unless its upstream reports no tokens. New API charges a ratio-priced task half the ratio in USD per request and never settles it by tokens.
+
+### Fixed
+
+- A `vercel_sdk` channel that points at another New API gateway now sends to that gateway's `/decision/v1/evaluate` with the model. Earlier versions left out the model, and the gateway refused the request.
 
 ### Migration
 
-- Price every model you enable with a task usage expression. For `gpt-6-luna`, set the expression on the plugin override `decision::gpt-6-luna` and keep its chat price on the model. Requests for a model without a task expression are refused.
+- For a model whose model-level price is a ratio or a chat expression and that only serves decisions, such as `gemini-decision-1`, replace that price with a task expression, for example `tier("base", u("input_tokens") * 0.10 / 1000000)`. Keep the `decision::gpt-6-luna` override for `gpt-6-luna`.
+- Price an ai-decide model with a task expression such as `u("requests") * 0.002`. A fixed per-call price also works when neither the name nor the model it maps to has a task expression.

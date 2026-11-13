@@ -34,7 +34,7 @@ test("an alias of gpt-6-luna keeps the luna profile, a mapped deployment name to
 
 test("other models use the default schema with output tokens", () => {
   const result = settleWith("gemini-decision-1", { input_tokens: 500, input_tokens_details: { cached_tokens: 100 }, output_tokens: 7 });
-  assert.deepEqual(result.settled, { input_tokens: 400, cache_read_tokens: 100, cache_write_tokens: 0, output_tokens: 7 });
+  assert.deepEqual(result.settled, { input_tokens: 400, cache_read_tokens: 100, cache_write_tokens: 0, output_tokens: 7, requests: 1 });
 });
 
 test("vendor usage shapes", () => {
@@ -71,7 +71,7 @@ test("reservation: bounded by bytes and by the channel or context cap", () => {
   const urlImage = run(OA.path, Object.assign({}, OA.body, { model: "jev-latest", input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.com/a.png" }] }] }), { config: { protocol: "openai" } });
   assert.ok(urlImage.reserved.input_tokens >= 8192);
   const legacy = failure(() => plugin.extractUsage(Object.assign({}, small.ctx, { usagePurpose: "billing_ratios" })));
-  assert.match(legacy.message, /\[decision:400:model_price_error\] Model jev-latest has no task price/);
+  assert.match(legacy.message, /\[decision:400:model_price_error\] Model jev-latest is priced per call or by ratio/);
 });
 
 test("settled facts are bounded integers", () => {

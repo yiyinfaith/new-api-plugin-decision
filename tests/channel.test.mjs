@@ -100,7 +100,7 @@ test("question limit per channel and per protocol", () => {
 
 test("manifest: routes, models, config", () => {
   const paths = plugin.meta.routes.map((route) => route.path);
-  assert.deepEqual(paths, ["/v1/systemone", "/typesafe/v1/systemone", "/decisions/v1/systemone", "/providers/microsoft/v1/systemone", "/api/v1/systemone", "/api/alpha/decisions", "/v1/scaledown", "/v1/decisions", "/openai/v1/decisions", "/v1beta/decisions", "/v1/evaluate"]);
+  assert.deepEqual(paths, ["/v1/systemone", "/typesafe/v1/systemone", "/decisions/v1/systemone", "/providers/microsoft/v1/systemone", "/api/v1/systemone", "/api/alpha/decisions", "/v1/scaledown", "/v1/decisions", "/openai/v1/decisions", "/v1beta/decisions", "/v1/evaluate", "/api/2.0/ai-functions/ai-decide"]);
   for (const route of plugin.meta.routes) {
     assert.equal(route.retainResult, false);
     assert.ok(plugin.native[route.decode], route.decode);

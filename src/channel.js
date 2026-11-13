@@ -16,6 +16,7 @@ const PROTOCOL_TITLES = [
   { en: "Gemini Decisions", zh: "Gemini Decisions" },
   { en: "Vercel evaluation", zh: "Vercel Evaluation" },
   { en: "Vercel AI SDK transport", zh: "Vercel AI SDK 内部接口" },
+  { en: "Databricks ai-decide (no token usage, billed per request)", zh: "Databricks ai-decide（无 token 用量，按次计费）" },
 ];
 
 export const AUTH_TYPES = ["auto", "bearer", "x-goog-api-key", "api-key", "x-api-key", "custom", "none"];
@@ -143,6 +144,9 @@ export function resolveChannel(ctx) {
   const names = [clientModel, mapped];
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
   if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
+  const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
+  // Another New API serves the AI SDK body at /v1/evaluate, which names the model.
+  if (gateway && protocol === "vercel_sdk") protocol = "vercel";
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -151,7 +155,6 @@ export function resolveChannel(ctx) {
     } else model = mapped;
   }
   const upstream = UPSTREAMS[protocol];
-  const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
   let path;
   if (gateway) path = "/decision" + GATEWAY_PATHS[protocol];
   else path = perModel(config, "modelPaths", names) || (typeof config.path === "string" && config.path.trim()) || upstream.path;
@@ -181,5 +184,7 @@ export function resolveChannel(ctx) {
     maxQuestions: maxQuestions,
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
+    // Another New API routes even an ai-decide request by its model.
+    keepModel: !!gateway,
   };
 }

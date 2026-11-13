@@ -1,10 +1,16 @@
 // Usage facts for New API task billing. The plugin reports quantities only;
-// the administrator's expressions set every price.
+// the administrator's expressions set every price, and no model has a price
+// or a pricing rule here.
 //
 // Default schema (every model): input_tokens excludes cached reads and cache
-// writes, so the four fields never count a token twice.
-// Special profiles (meta.usageProfiles) exist only where a model's official
-// billing needs other fields; adding one is a new entry in SPECIAL_BILLING.
+// writes, so the four token fields never count a token twice; requests is 1
+// for each successful request.
+// An upstream that reports no tokens (Databricks ai-decide) reports requests
+// only: token fields are never made up, so an expression that reads them
+// fails and the request is refused instead of billed as free.
+// Special profiles (meta.usageProfiles) exist only where a model is billed
+// differently for chat and for decisions: gpt-6-luna. Adding one is a new
+// entry in SPECIAL_BILLING.
 
 import { base64Bytes, isObject, utf8Length } from "./util.js";
 
@@ -17,12 +23,18 @@ export const DEFAULT_SCHEMA = {
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   output_tokens: tokenField("Output token unit price", "输出 token 单价"),
+  requests: { type: "number", unit: "count", description: { en: "Successful requests (always 1); the only fact of upstreams without token usage", zh: "成功请求数（恒为 1）；无 token 用量的上游只报告这一项" } },
 };
 
 export const DEFAULT_EXAMPLES = [
-  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 } },
-  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0 } },
+  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
+  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
 ];
+
+// The facts of an upstream that reports no token usage.
+export function requestFacts() {
+  return { requests: 1 };
+}
 
 // OpenAI bills gpt-6-luna decisions for input, cached input and cache writes,
 // never for output, and doubles the rates above 272K input tokens.
@@ -82,7 +94,7 @@ export function usageFacts(usage, upstreamModel, model) {
   const normalized = { input: input, cacheRead: cacheRead, cacheWrite: cacheWrite, billedInput: input - cacheRead - cacheWrite, output: clampTokens(usage.output) };
   const profile = billingProfile(upstreamModel, model);
   if (profile) return profile.facts(normalized);
-  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output };
+  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
 }
 
 // ---- reservation ------------------------------------------------------------
@@ -127,6 +139,7 @@ export function estimateInputTokens(ir, files) {
 const OUTPUT_TOKENS_PER_QUESTION = 32;
 
 export function reservationFacts(ir, files, route, longContext, upstreamModel, model) {
+  if (route.upstream.noUsage) return requestFacts();
   const cap = route.reserveTokens || (longContext && route.upstream.longContextTokens) || route.upstream.contextTokens;
   const tokens = Math.min(estimateInputTokens(ir, files), cap);
   return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * ir.questions.length }, upstreamModel, model);

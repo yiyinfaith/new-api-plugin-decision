@@ -3,10 +3,11 @@
 // through the Decision IR, so adding a protocol means adding one decoder and
 // renderer (client side) and one encoder and parser (upstream side).
 
+import { dbDecode, dbEncode, dbParse, dbRender, dbRenderError } from "./databricks.js";
 import { gmDecode, gmEncode, gmParse, gmRender, gmRenderError, gmRenderUsage } from "./gemini.js";
 import { oaDecode, oaEncode, oaParse, oaRender, oaRenderError, oaRenderUsage } from "./openai.js";
 import { s1Decode, s1Encode, s1Parse, s1Render, s1RenderError, s1RenderUsage } from "./systemone.js";
-import { fail, isObject } from "./util.js";
+import { fail, hasOwn, isObject } from "./util.js";
 import { vcDecode, vcEncode, vcParse, vcRender, vcRenderError } from "./vercel.js";
 
 // Upstream protocols an administrator can pick per channel or per model.
@@ -17,6 +18,8 @@ export const UPSTREAMS = {
   gemini: { family: "gemini", dialect: "gemini", path: "/v1beta/decisions", auth: "x-goog-api-key", maxQuestions: 0, contextTokens: 262144 },
   vercel: { family: "vercel", dialect: "evaluate", path: "/v1/evaluate", auth: "bearer", maxQuestions: 0, contextTokens: 262400 },
   vercel_sdk: { family: "vercel", dialect: "sdk", path: "/v4/ai/evaluation-model", auth: "bearer", maxQuestions: 0, contextTokens: 262400 },
+  // Reports no token usage: billed per successful request (see billing.js).
+  databricks: { family: "databricks", dialect: "databricks", path: "/api/2.0/ai-functions/ai-decide", auth: "bearer", maxQuestions: 0, contextTokens: 0, noUsage: true },
 };
 
 export const UPSTREAM_IDS = Object.keys(UPSTREAMS);
@@ -29,6 +32,7 @@ export const GATEWAY_PATHS = {
   gemini: "/v1beta/decisions",
   vercel: "/v1/evaluate",
   vercel_sdk: "/v1/evaluate",
+  databricks: "/api/2.0/ai-functions/ai-decide",
 };
 
 // Client protocols: {decode, render, renderError}.
@@ -40,6 +44,7 @@ export const CLIENTS = {
   openai: { family: "openai", decode: (body) => oaDecode(body), render: (ir, result) => oaRender(ir, result), error: oaRenderError },
   gemini: { family: "gemini", decode: (body) => gmDecode(body), render: (ir, result) => gmRender(ir, result), error: gmRenderError },
   vercel: { family: "vercel", decode: (body) => vcDecode(body), render: (ir, result) => vcRender(ir, result), error: vcRenderError },
+  databricks: { family: "databricks", decode: (body) => dbDecode(body), render: (ir, result) => dbRender(ir, result), error: dbRenderError },
 };
 
 // Client paths (without the /decision prefix) and the protocol each speaks.
@@ -57,6 +62,7 @@ export const CLIENT_ROUTES = [
   { path: "/openai/v1/decisions", protocol: "openai" },
   { path: "/v1beta/decisions", protocol: "gemini" },
   { path: "/v1/evaluate", protocol: "vercel" },
+  { path: "/api/2.0/ai-functions/ai-decide", protocol: "databricks" },
 ];
 
 export function routeProtocol(path) {
@@ -81,6 +87,7 @@ export function encodeUpstream(id, ir, model, newId, options) {
   if (upstream.family === "openai") return oaEncode(ir, model);
   if (upstream.family === "gemini") return gmEncode(ir, model);
   if (upstream.family === "vercel") return vcEncode(ir, model, upstream.dialect === "sdk");
+  if (upstream.family === "databricks") return dbEncode(ir, model, !!(options && options.keepModel));
   fail("Unknown upstream protocol " + id, "invalid_config", 500);
 }
 
@@ -99,6 +106,7 @@ export function parseUpstream(id, body, ir) {
   if (upstream.family === "systemone") result = s1Parse(reply, ir);
   else if (upstream.family === "openai") result = oaParse(reply, ir);
   else if (upstream.family === "gemini") result = gmParse(reply, ir);
+  else if (upstream.family === "databricks") result = dbParse(reply, ir);
   else result = vcParse(reply, ir);
   result.reply = reply;
   return result;
@@ -108,17 +116,19 @@ const REPLY_USAGE = {
   systemone: (usage) => s1RenderUsage(usage, "typesafe"),
   openai: oaRenderUsage,
   gemini: gmRenderUsage,
+  // ai-decide replies carry no usage.
+  databricks: null,
 };
 
 // When the client spoke exactly the upstream's protocol the reply goes back
 // as the upstream wrote it, vendor extensions included, except usage: a relay
 // may add its own cost and billing details there, which stay in the gateway.
 export function passthroughReply(clientId, upstreamId, result) {
-  if (clientId !== upstreamId || !REPLY_USAGE[clientId] || !isObject(result.reply)) return null;
+  if (clientId !== upstreamId || !hasOwn(REPLY_USAGE, clientId) || !isObject(result.reply)) return null;
   const reply = {};
   for (const key of Object.keys(result.reply)) {
     if (key !== "usage") reply[key] = result.reply[key];
-    else if (result.usage) reply.usage = REPLY_USAGE[clientId](result.usage);
+    else if (result.usage && REPLY_USAGE[clientId]) reply.usage = REPLY_USAGE[clientId](result.usage);
   }
   return reply;
 }

@@ -1,22 +1,28 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.0"
+version: "1.0.1"
 locale: "zh-CN"
 ---
 # Changelog
 
-## [1.0.0]
+## [1.0.1]
 
 ### Added
 
-- 可用七种客户端格式调用决策模型：TypeSafe System One、OpenRouter、ScaleDown、OpenAI Decisions、Gemini Decisions、Vercel Evaluation，以及 Perplexity、Inception 使用的 System One 形状 `/v1/decisions`；所有路径也能加 `/decision` 前缀。
-- 每个渠道可以按 System One、OpenRouter、OpenAI Decisions、Gemini Decisions 或 Vercel Evaluation 发送请求，回复会转回客户端的格式。
-- 可按渠道选择上游协议、路径和密钥请求头，并按模型指定协议、路径和上游模型 ID。
-- 在渠道里把任意模型名重定向到 `decision-custom` 即可使用。
-- 输入、缓存读取、缓存写入和输出分开定价；`gpt-6-luna` 系列用长上下文字段代替输出字段，决策价格可以和聊天价格分开。
-- 保留官方 TypeSafe 插件的全部功能：四种题型、Base64 或 SDK 上传的图片、长上下文请求头、TypeSafe 错误格式和键顺序。
+- 支持 Databricks ai-decide：客户端可以把它的格式发到 `POST /api/2.0/ai-functions/ai-decide`（加 `model` 用于路由），渠道可以选 `databricks` 上游协议。发往上游的请求不带模型。
+- 新增用量字段 `requests`，每个成功请求为 1，可以按次定价。ai-decide 不报告 token，只上报这个字段，按次计费；失败的请求不扣费。
+
+### Changed
+
+- 只有 `gpt-6-luna` 系列需要插件覆盖价 `decision::<模型>`；`gemini-decision-1`、Jev 和其它模型都用模型级任务表达式。
+- 用倍率定价的模型仍然被拒绝；用固定按次价格的模型也被拒绝，除非上游不报告 token。New API 对倍率定价的任务按每次「倍率 ÷ 2」美元扣费，且不按 token 结算。
+
+### Fixed
+
+- 上游是另一台 New API 网关的 `vercel_sdk` 渠道，现在发到对方的 `/decision/v1/evaluate` 并带上模型。之前的版本漏了模型，对方会拒绝请求。
 
 ### Migration
 
-- 给启用的每个模型配置任务用量表达式价格。`gpt-6-luna` 的表达式配在插件覆盖价 `decision::gpt-6-luna` 上，聊天价格仍配在模型上。没有任务表达式价格的模型会被拒绝。
+- 只用于决策的模型（如 `gemini-decision-1`），如果模型级价格是倍率或聊天表达式，请换成任务表达式，例如 `tier("base", u("input_tokens") * 0.10 / 1000000)`。`gpt-6-luna` 继续使用 `decision::gpt-6-luna` 覆盖价。
+- ai-decide 用的模型请配任务表达式，如 `u("requests") * 0.002`。这个名字和它重定向到的模型都没有任务表达式时，也可以用固定按次价格。

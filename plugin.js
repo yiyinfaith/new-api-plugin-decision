@@ -539,7 +539,8 @@ function s1FillInstructions(questions) {
 function s1Encode(ir, upstreamDialect, model, newId, options) {
   const fill = !!(options && options.fillInstructions);
   const allowed = S1_DIALECT_FIELDS[upstreamDialect] || S1_DIALECT_FIELDS.typesafe;
-  const sameFamily = ir.source.family === "systemone" && ir.passthrough;
+  // A Databricks body is System One's state and questions, so it goes as written too.
+  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough;
   const body = { model: model };
   let multipart = null;
   let images = false;
@@ -706,6 +707,221 @@ function s1RenderError(status, message, code, upstream, dialect) {
   if (isObject(upstream) && upstream.detail !== undefined) return upstream;
   if (code && code !== "invalid_request") return { detail: { error_type: code, message: message } };
   return { detail: message };
+}
+
+// ---- src/databricks.js ----
+// Databricks AI Functions ai-decide (POST /api/2.0/ai-functions/ai-decide, Beta;
+// https://docs.databricks.com/api/ai-functions/v1/ai-decide).
+//
+// The body is System One's state and questions without a model: noul, choice
+// and score questions, instructions on every question, 2 to 10 score levels,
+// no images. The reply wraps the answers in response.answers, a noul answer
+// carries probability instead of noul, and no token usage is reported.
+// Clients send a model as well, for New API routing; the upstream request
+// never carries one.
+
+
+const DB_FIELDS = ["model", "state", "questions", "options"];
+const DB_QUESTION_FIELDS = ["type", "instructions", "criteria"];
+const DB_TYPES = ["noul", "choice", "score"];
+const DB_VERSION = "1.0";
+
+// Descriptions may be text, an object or an array.
+function dbIsValue(value) {
+  return typeof value === "string" || (value !== null && typeof value === "object");
+}
+
+function dbBlank(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  return isObject(value) && Object.keys(value).length === 0;
+}
+
+function dbValidateQuestion(id, question) {
+  const where = 'Question "' + id + '"';
+  if (!id.trim()) fail("Question names must contain text");
+  if (!isObject(question)) fail(where + " must be an object");
+  for (const member of Object.keys(question)) {
+    if (DB_QUESTION_FIELDS.indexOf(member) < 0) fail(where + " does not accept the member " + member, "unknown_field");
+  }
+  if (DB_TYPES.indexOf(question.type) < 0) fail(where + " must have type noul, choice, or score", "unsupported_question_type");
+  if (!dbIsValue(question.instructions)) fail(where + " needs instructions as text, an object, or an array");
+  const criteria = question.criteria;
+  if (question.type === "choice") {
+    if (!isObject(criteria) || Object.keys(criteria).length === 0 || Object.keys(criteria).length > 255)
+      fail(where + ": choice criteria must contain between 1 and 255 options");
+    for (const key of Object.keys(criteria)) {
+      if (!key.trim()) fail(where + ": choice option names must contain text");
+      if (criteria[key] !== null && !dbIsValue(criteria[key])) fail(where + ": choice option descriptions must be text, objects, arrays, or null");
+    }
+  } else if (question.type === "score") {
+    if (!Array.isArray(criteria) || criteria.length < 2 || criteria.length > 10) fail(where + ": score criteria must contain between 2 and 10 levels");
+    for (const level of criteria) {
+      if (!dbIsValue(level) || dbBlank(level)) fail(where + ": score levels must be nonblank text, objects, or arrays");
+    }
+  } else if (criteria !== undefined) {
+    if (!isObject(criteria)) fail(where + ": noul criteria must be an object with true and false descriptions");
+    for (const key of Object.keys(criteria)) {
+      if (key !== "true" && key !== "false") fail(where + ": noul criteria accept only true and false", "unknown_field");
+      if (!dbIsValue(criteria[key])) fail(where + ": noul criteria descriptions must be text, objects, or arrays");
+    }
+    if (dbBlank(question.instructions) && dbBlank(criteria.true) && dbBlank(criteria.false)) fail(where + " needs instructions or a criteria description");
+  } else if (dbBlank(question.instructions)) fail(where + " needs instructions or a criteria description");
+}
+
+function dbDecode(body) {
+  if (!isObject(body)) fail("Request body must be a JSON object");
+  for (const field of Object.keys(body)) {
+    if (DB_FIELDS.indexOf(field) < 0) fail("Databricks ai-decide does not accept the request field " + field, "unknown_field");
+  }
+  if (typeof body.model !== "string" || !body.model.trim()) fail("model is required: the gateway routes the request by it");
+  if (!dbIsValue(body.state)) fail("state must be text, an object, or an array");
+  if (!isObject(body.questions) || Object.keys(body.questions).length === 0) fail("questions must be a nonempty object");
+  for (const id of Object.keys(body.questions)) dbValidateQuestion(id, body.questions[id]);
+  const extras = { important: {}, ignorable: {} };
+  if (body.options !== undefined) {
+    if (!isObject(body.options)) fail("options must be an object");
+    for (const key of Object.keys(body.options)) if (key !== "version") fail("options does not accept the member " + key, "unknown_field");
+    if (body.options.version !== undefined && body.options.version !== DB_VERSION) fail('options.version must be "' + DB_VERSION + '"');
+    // Version 1.0 is the only one; other protocols have nothing to set.
+    extras.ignorable.options = body.options;
+  }
+  const questions = Object.keys(body.questions).map(function (id) {
+    const source = body.questions[id];
+    const question = { name: id, named: true, type: source.type, instructions: contentFromSystemOne(source.instructions, {}), raw: source };
+    if (source.type === "noul" && isObject(source.criteria)) {
+      question.trueText = contentFromSystemOne(source.criteria.true, {});
+      question.falseText = contentFromSystemOne(source.criteria.false, {});
+    } else if (source.type === "choice") {
+      question.options = Object.keys(source.criteria).map((key) => ({ key: key, value: key, description: contentFromSystemOne(source.criteria[key], {}) }));
+    } else if (source.type === "score") {
+      question.levels = source.criteria.map((level) => ({ description: contentFromSystemOne(level, {}), source: level }));
+    }
+    return question;
+  });
+  return {
+    source: { family: "databricks", dialect: "databricks" },
+    model: body.model,
+    input: contentFromSystemOne(body.state, {}),
+    questions: questions,
+    extras: extras,
+    passthrough: body,
+    hasAssets: false,
+  };
+}
+
+// ---- upstream encoder -------------------------------------------------------
+
+const NO_MEDIA = {
+  add: function (segment, where) {
+    fail(where + " contains " + segment.kind + " content; Databricks ai-decide accepts text and JSON only", "unsupported_modality");
+  },
+};
+
+function dbValue(content, where) {
+  return contentToSystemOne(content, NO_MEDIA, where);
+}
+
+// A System One or Databricks client's own values go upstream as written; any
+// other client's are converted from the IR.
+function dbQuestion(question, raw) {
+  const where = 'Question "' + question.name + '"';
+  const source = raw ? question.raw : null;
+  if (DB_TYPES.indexOf(question.type) < 0) fail(where + " has type " + question.type + "; Databricks ai-decide supports noul, choice, and score", "unsupported_question_type");
+  const out = { type: question.type };
+  const instructions = source ? source.instructions : dbValue(question.instructions, where);
+  // Databricks requires instructions on every question; System One shows the
+  // model the question's name, so that is what a missing one becomes.
+  out.instructions = instructions === undefined || instructions === null ? question.name : instructions;
+  if (question.type === "noul") {
+    const criteria = {};
+    const yes = source ? (isObject(source.criteria) ? source.criteria.true : null) : dbValue(question.trueText, where);
+    const no = source ? (isObject(source.criteria) ? source.criteria.false : null) : dbValue(question.falseText, where);
+    if (yes !== null && yes !== undefined) criteria.true = yes;
+    if (no !== null && no !== undefined) criteria.false = no;
+    if (Object.keys(criteria).length) out.criteria = criteria;
+  } else if (question.type === "choice") {
+    out.criteria = {};
+    for (const option of question.options) {
+      if (hasOwn(out.criteria, option.key)) fail(where + ' has two options that both read "' + option.key + '" on Databricks');
+      out.criteria[option.key] = source ? source.criteria[option.key] : dbValue(option.description, where);
+    }
+    if (question.options.length > 255) fail(where + " has more than 255 options; Databricks accepts 1 to 255", "limit_exceeded");
+  } else {
+    out.criteria = question.levels.map(s1LevelValue);
+    if (out.criteria.length < 2 || out.criteria.length > 10) fail(where + " has " + out.criteria.length + " levels; Databricks accepts 2 to 10", "limit_exceeded");
+    if (out.criteria.some(dbBlank)) fail(where + " has a blank level; Databricks needs a description for every level");
+  }
+  return out;
+}
+
+// keepModel: the upstream is another New API, whose gateway routes by model.
+function dbEncode(ir, model, keepModel) {
+  if (ir.onlyHere && ir.onlyHere.length) fail("The request has " + ir.onlyHere[0] + ", which Databricks ai-decide cannot express", "unsupported_content");
+  requireUniqueNames(ir.questions);
+  const raw = (ir.source.family === "systemone" || ir.source.family === "databricks") && !!ir.passthrough && !ir.hasAssets;
+  const body = {};
+  if (keepModel) body.model = model;
+  let state = raw ? ir.passthrough.state : dbValue(ir.input, "The input");
+  if (state === null || state === undefined) state = "";
+  body.state = state;
+  body.questions = {};
+  for (const question of ir.questions) body.questions[question.name] = dbQuestion(question, raw);
+  for (const kind of ["important", "ignorable"]) {
+    for (const field of Object.keys(ir.extras[kind] || {})) {
+      if (field === "options" && ir.source.family === "databricks") body.options = ir.extras[kind][field];
+      else if (kind === "important") fail("The request field " + field + " has no equivalent on Databricks ai-decide", "unsupported_field");
+    }
+  }
+  return { body: body };
+}
+
+// ---- upstream reply ---------------------------------------------------------
+
+function dbParse(body, ir) {
+  const response = isObject(body) && isObject(body.response) ? body.response : null;
+  if (!response || !isObject(response.answers)) fail("The upstream reply has no response.answers object", "upstream_invalid", 502);
+  const answers = ir.questions.map(function (question) {
+    const where = 'The answer to "' + question.name + '"';
+    const answer = hasOwn(response.answers, question.name) ? response.answers[question.name] : null;
+    if (isObject(answer) && answer.type === "noul" && question.type === "noul") {
+      if (!isFiniteNumber(answer.probability)) fail(where + " has no probability", "upstream_invalid", 502);
+      return { type: "noul", probability: answer.probability, raw: answer };
+    }
+    return s1ParseAnswer(answer, question, where);
+  });
+  // ai-decide reports no model and no token usage.
+  return { model: "", answers: answers, usage: null };
+}
+
+// ---- client renderer --------------------------------------------------------
+
+function dbRender(ir, result) {
+  const answers = {};
+  ir.questions.forEach(function (question, index) {
+    const answer = result.answers[index];
+    answers[question.name] = answer.type === "noul" ? { type: "noul", probability: answer.probability } : s1RenderAnswer(answer, question, "typesafe");
+  });
+  return { response: { answers: answers }, metadata: { version: DB_VERSION } };
+}
+
+// https://docs.databricks.com/api/workspace/errors
+const DB_ERROR_CODES = {
+  400: "INVALID_PARAMETER_VALUE",
+  401: "UNAUTHENTICATED",
+  403: "PERMISSION_DENIED",
+  404: "NOT_FOUND",
+  409: "ABORTED",
+  429: "RESOURCE_EXHAUSTED",
+  500: "INTERNAL_ERROR",
+  503: "TEMPORARILY_UNAVAILABLE",
+  504: "DEADLINE_EXCEEDED",
+};
+
+function dbRenderError(status, message, code, upstream) {
+  if (isObject(upstream) && typeof upstream.error_code === "string" && typeof upstream.message === "string") return upstream;
+  return { error_code: DB_ERROR_CODES[status] || (status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST"), message: message };
 }
 
 // ---- src/openai.js ----
@@ -1728,6 +1944,8 @@ const UPSTREAMS = {
   gemini: { family: "gemini", dialect: "gemini", path: "/v1beta/decisions", auth: "x-goog-api-key", maxQuestions: 0, contextTokens: 262144 },
   vercel: { family: "vercel", dialect: "evaluate", path: "/v1/evaluate", auth: "bearer", maxQuestions: 0, contextTokens: 262400 },
   vercel_sdk: { family: "vercel", dialect: "sdk", path: "/v4/ai/evaluation-model", auth: "bearer", maxQuestions: 0, contextTokens: 262400 },
+  // Reports no token usage: billed per successful request (see billing.js).
+  databricks: { family: "databricks", dialect: "databricks", path: "/api/2.0/ai-functions/ai-decide", auth: "bearer", maxQuestions: 0, contextTokens: 0, noUsage: true },
 };
 
 const UPSTREAM_IDS = Object.keys(UPSTREAMS);
@@ -1740,6 +1958,7 @@ const GATEWAY_PATHS = {
   gemini: "/v1beta/decisions",
   vercel: "/v1/evaluate",
   vercel_sdk: "/v1/evaluate",
+  databricks: "/api/2.0/ai-functions/ai-decide",
 };
 
 // Client protocols: {decode, render, renderError}.
@@ -1751,6 +1970,7 @@ const CLIENTS = {
   openai: { family: "openai", decode: (body) => oaDecode(body), render: (ir, result) => oaRender(ir, result), error: oaRenderError },
   gemini: { family: "gemini", decode: (body) => gmDecode(body), render: (ir, result) => gmRender(ir, result), error: gmRenderError },
   vercel: { family: "vercel", decode: (body) => vcDecode(body), render: (ir, result) => vcRender(ir, result), error: vcRenderError },
+  databricks: { family: "databricks", decode: (body) => dbDecode(body), render: (ir, result) => dbRender(ir, result), error: dbRenderError },
 };
 
 // Client paths (without the /decision prefix) and the protocol each speaks.
@@ -1768,6 +1988,7 @@ const CLIENT_ROUTES = [
   { path: "/openai/v1/decisions", protocol: "openai" },
   { path: "/v1beta/decisions", protocol: "gemini" },
   { path: "/v1/evaluate", protocol: "vercel" },
+  { path: "/api/2.0/ai-functions/ai-decide", protocol: "databricks" },
 ];
 
 function routeProtocol(path) {
@@ -1792,6 +2013,7 @@ function encodeUpstream(id, ir, model, newId, options) {
   if (upstream.family === "openai") return oaEncode(ir, model);
   if (upstream.family === "gemini") return gmEncode(ir, model);
   if (upstream.family === "vercel") return vcEncode(ir, model, upstream.dialect === "sdk");
+  if (upstream.family === "databricks") return dbEncode(ir, model, !!(options && options.keepModel));
   fail("Unknown upstream protocol " + id, "invalid_config", 500);
 }
 
@@ -1810,6 +2032,7 @@ function parseUpstream(id, body, ir) {
   if (upstream.family === "systemone") result = s1Parse(reply, ir);
   else if (upstream.family === "openai") result = oaParse(reply, ir);
   else if (upstream.family === "gemini") result = gmParse(reply, ir);
+  else if (upstream.family === "databricks") result = dbParse(reply, ir);
   else result = vcParse(reply, ir);
   result.reply = reply;
   return result;
@@ -1819,17 +2042,19 @@ const REPLY_USAGE = {
   systemone: (usage) => s1RenderUsage(usage, "typesafe"),
   openai: oaRenderUsage,
   gemini: gmRenderUsage,
+  // ai-decide replies carry no usage.
+  databricks: null,
 };
 
 // When the client spoke exactly the upstream's protocol the reply goes back
 // as the upstream wrote it, vendor extensions included, except usage: a relay
 // may add its own cost and billing details there, which stay in the gateway.
 function passthroughReply(clientId, upstreamId, result) {
-  if (clientId !== upstreamId || !REPLY_USAGE[clientId] || !isObject(result.reply)) return null;
+  if (clientId !== upstreamId || !hasOwn(REPLY_USAGE, clientId) || !isObject(result.reply)) return null;
   const reply = {};
   for (const key of Object.keys(result.reply)) {
     if (key !== "usage") reply[key] = result.reply[key];
-    else if (result.usage) reply.usage = REPLY_USAGE[clientId](result.usage);
+    else if (result.usage && REPLY_USAGE[clientId]) reply.usage = REPLY_USAGE[clientId](result.usage);
   }
   return reply;
 }
@@ -1851,6 +2076,7 @@ const PROTOCOL_TITLES = [
   { en: "Gemini Decisions", zh: "Gemini Decisions" },
   { en: "Vercel evaluation", zh: "Vercel Evaluation" },
   { en: "Vercel AI SDK transport", zh: "Vercel AI SDK 内部接口" },
+  { en: "Databricks ai-decide (no token usage, billed per request)", zh: "Databricks ai-decide（无 token 用量，按次计费）" },
 ];
 
 const AUTH_TYPES = ["auto", "bearer", "x-goog-api-key", "api-key", "x-api-key", "custom", "none"];
@@ -1978,6 +2204,9 @@ function resolveChannel(ctx) {
   const names = [clientModel, mapped];
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
   if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
+  const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
+  // Another New API serves the AI SDK body at /v1/evaluate, which names the model.
+  if (gateway && protocol === "vercel_sdk") protocol = "vercel";
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -1986,7 +2215,6 @@ function resolveChannel(ctx) {
     } else model = mapped;
   }
   const upstream = UPSTREAMS[protocol];
-  const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
   let path;
   if (gateway) path = "/decision" + GATEWAY_PATHS[protocol];
   else path = perModel(config, "modelPaths", names) || (typeof config.path === "string" && config.path.trim()) || upstream.path;
@@ -2016,17 +2244,25 @@ function resolveChannel(ctx) {
     maxQuestions: maxQuestions,
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
+    // Another New API routes even an ai-decide request by its model.
+    keepModel: !!gateway,
   };
 }
 
 // ---- src/billing.js ----
 // Usage facts for New API task billing. The plugin reports quantities only;
-// the administrator's expressions set every price.
+// the administrator's expressions set every price, and no model has a price
+// or a pricing rule here.
 //
 // Default schema (every model): input_tokens excludes cached reads and cache
-// writes, so the four fields never count a token twice.
-// Special profiles (meta.usageProfiles) exist only where a model's official
-// billing needs other fields; adding one is a new entry in SPECIAL_BILLING.
+// writes, so the four token fields never count a token twice; requests is 1
+// for each successful request.
+// An upstream that reports no tokens (Databricks ai-decide) reports requests
+// only: token fields are never made up, so an expression that reads them
+// fails and the request is refused instead of billed as free.
+// Special profiles (meta.usageProfiles) exist only where a model is billed
+// differently for chat and for decisions: gpt-6-luna. Adding one is a new
+// entry in SPECIAL_BILLING.
 
 
 function tokenField(en, zh) {
@@ -2038,12 +2274,18 @@ const DEFAULT_SCHEMA = {
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   output_tokens: tokenField("Output token unit price", "输出 token 单价"),
+  requests: { type: "number", unit: "count", description: { en: "Successful requests (always 1); the only fact of upstreams without token usage", zh: "成功请求数（恒为 1）；无 token 用量的上游只报告这一项" } },
 };
 
 const DEFAULT_EXAMPLES = [
-  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 } },
-  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0 } },
+  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
+  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
 ];
+
+// The facts of an upstream that reports no token usage.
+function requestFacts() {
+  return { requests: 1 };
+}
 
 // OpenAI bills gpt-6-luna decisions for input, cached input and cache writes,
 // never for output, and doubles the rates above 272K input tokens.
@@ -2103,7 +2345,7 @@ function usageFacts(usage, upstreamModel, model) {
   const normalized = { input: input, cacheRead: cacheRead, cacheWrite: cacheWrite, billedInput: input - cacheRead - cacheWrite, output: clampTokens(usage.output) };
   const profile = billingProfile(upstreamModel, model);
   if (profile) return profile.facts(normalized);
-  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output };
+  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
 }
 
 // ---- reservation ------------------------------------------------------------
@@ -2148,6 +2390,7 @@ function estimateInputTokens(ir, files) {
 const OUTPUT_TOKENS_PER_QUESTION = 32;
 
 function reservationFacts(ir, files, route, longContext, upstreamModel, model) {
+  if (route.upstream.noUsage) return requestFacts();
   const cap = route.reserveTokens || (longContext && route.upstream.longContextTokens) || route.upstream.contextTokens;
   const tokens = Math.min(estimateInputTokens(ir, files), cap);
   return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * ir.questions.length }, upstreamModel, model);
@@ -2166,7 +2409,7 @@ function usageFromTaskData(data) {
 // Response: upstream reply -> upstream parser -> answers/usage IR -> client renderer
 
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 // Declared models. Any other name works through the channel's model mapping:
 // map it to decision-custom (the client's name is sent upstream) or to one of
@@ -2201,6 +2444,7 @@ const DECODERS = {
   openai: "decodeOpenAI",
   gemini: "decodeGemini",
   vercel: "decodeEvaluate",
+  databricks: "decodeDatabricks",
 };
 
 export const meta = {
@@ -2309,7 +2553,7 @@ function submitRequest(ctx) {
   const prepared = prepare(ctx);
   const ir = prepared.ir;
   const route = prepared.route;
-  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions });
+  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel });
   const headers = { Accept: "application/json" };
   for (const name of Object.keys(route.headers)) headers[name] = route.headers[name];
   if (route.upstream.family === "systemone") {
@@ -2355,23 +2599,40 @@ function submitResult(ctx, response) {
   };
 }
 
+// The host asks for billing ratios only on its per-call path, taken when the
+// model has no task expression: a fixed per-call price, or a ratio, which the
+// host turns into a flat charge of half the ratio in dollars per request and
+// never settles by tokens. Neither bills tokens, so a token upstream refuses
+// it; an upstream without token usage takes the fixed per-call price as is.
+function perCallRefusal(ctx) {
+  const model = ctx.model;
+  if (billingProfile(ctx.upstreamModel || model, model))
+    return (
+      "Model " + model + " has no decision price. Its model price bills chat; set the plugin price decision::" + model +
+      ' with a usage expression such as tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01 + u("cache_write_tokens") * 0.125) / 1000000)'
+    );
+  return (
+    "Model " + model + " is priced per call or by ratio, which cannot bill decision tokens. Set its model price to a task expression that reads the token usage, " +
+    'such as tier("base", u("input_tokens") * 0.042 / 1000000)'
+  );
+}
+
 export function extractUsage(ctx) {
   return run(function () {
     const prepared = prepare(ctx);
-    // The host asks for billing ratios only on its legacy per-call path: the
-    // model has no task expression and would be charged a flat or chat price
-    // (a ratio-priced chat model such as gpt-6-luna, or an unpriced model in
-    // self-use mode). Decisions are billed by tokens, so refuse instead.
-    if (ctx.usagePurpose === "billing_ratios")
-      fail(
-        "Model " + ctx.model + " has no task price. Set a task usage expression for it, or for decision::" + ctx.model + " when the model also serves chat; a flat per-request price is tier(\"base\", 0.001)",
-        "model_price_error",
-      );
+    if (ctx.usagePurpose === "billing_ratios") {
+      if (prepared.route.upstream.noUsage) return null;
+      fail(perCallRefusal(ctx), "model_price_error");
+    }
     return reservationFacts(prepared.ir, ctx.files || [], prepared.route, longContext(ctx), ctx.upstreamModel || ctx.model, ctx.model);
   });
 }
 
 export function extractUsageOnComplete(ctx, result, data) {
+  // An upstream without token usage is billed per successful request; the
+  // protocol was recorded by parseSubmitResponse, never by the client.
+  const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
+  if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
   // Throwing keeps the reservation and makes the host log invalid usage; a
   // reply without usage is never billed as free.
@@ -2416,6 +2677,7 @@ export const native = {
   decodeOpenAI: decodeAs("openai"),
   decodeGemini: decodeAs("gemini"),
   decodeEvaluate: decodeAs("vercel"),
+  decodeDatabricks: decodeAs("databricks"),
   renderDecision: function (ctx, task) {
     if (!isObject(task.data) || task.data.response === undefined) throw new Error("The decision result is unavailable");
     return task.data.response;
