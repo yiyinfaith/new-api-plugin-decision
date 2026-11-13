@@ -54,7 +54,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 - Base URL 末尾已带路径第一段时不会重复：`https://api.typesafe.ai/v1` + `/v1/systemone` → `https://api.typesafe.ai/v1/systemone`。
 - 地址带账号 ID 的平台（如 Cloudflare Workers AI）把完整路径写进 `path`，例如 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}`；Workers AI 外层的 `{result, success}` 会自动拆开。
 - Databricks 的 Base URL 填工作区地址，如 `https://dbc-xxxx.cloud.databricks.com`，密钥填个人访问令牌或 OAuth 令牌（需要 `ai-functions` 权限）。
-- 上游是另一台装了本插件的 New API 时，渠道类型选 **New API（60）**，在扩展插件里勾选 Decision。请求会自动发到对方的 `/decision/...`，用对方的令牌鉴权；`databricks` 协议这时会带上 `model`，供对方路由。
+- 上游是另一台装了本插件的 New API 时，渠道类型选 **New API（60）**，在扩展插件里勾选 Decision。插件会自动使用对方的 Decision 专属入口，以确保跨网关路由准确；这是插件内部行为，不影响客户端优先使用原生路径。使用对方的令牌鉴权；`databricks` 协议这时会带上 `model`，供对方路由。
 - 其它请求头（如厂商要求的版本头）用渠道自带的「请求头覆盖」设置。
 
 ### 示例：一个渠道里不同模型走不同上游协议
@@ -159,11 +159,11 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
 
 ## 调用
 
-路径决定客户端协议，`model` 决定渠道和上游协议。每个路径也能加 `/decision` 前缀访问（如 `/decision/v1/decisions`），前缀路径只到本插件。
+**默认直接使用各协议的原生请求路径，不需要添加任何插件前缀**（例如 `/v1/systemone`、`/v1/decisions`、`/v1beta/decisions`）。只有在路径确实与 New API 主程序或其他已安装插件冲突、无法正确进入 Decision 时，才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`。带前缀的路径只进入本插件；`/v1`、`/api` 这些路径段本身不代表冲突。路径决定客户端协议，`model` 决定渠道和上游协议。
 
 | 客户端协议 | 路径 |
 | --- | --- |
-| TypeSafe System One | `POST /v1/systemone`、`/typesafe/v1/systemone`、`/decisions/v1/systemone`（Liquid）、`/providers/microsoft/v1/systemone`（Foundry） |
+| TypeSafe System One | `POST /v1/systemone`（推荐）；兼容 `/decisions/v1/systemone`（Liquid）、`/providers/microsoft/v1/systemone`（Foundry） |
 | OpenRouter | `POST /api/alpha/decisions`、`/api/v1/systemone` |
 | OpenAI Decisions | `POST /v1/decisions`、`/openai/v1/decisions`（Azure、Bifrost） |
 | Gemini Decisions | `POST /v1beta/decisions` |
@@ -179,7 +179,7 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
   - OpenRouter SDK 用 `https://你的域名/api`。
   - Google GenAI SDK 用 `https://你的域名`，并在 http options 里加 `Authorization: Bearer sk-...` 头（它默认只发 `x-goog-api-key`）。Azure SDK 同理，要改成发 Bearer 头。
   - Databricks ai-decide 格式直接用 HTTP 调用 `https://你的域名/api/2.0/ai-functions/ai-decide`，令牌填 New API 令牌，请求体里加 `model`。
-- 同时装了官方 TypeSafe 插件时，`/typesafe/...` 前缀归 TypeSafe 插件；`/v1/systemone` 两个插件共用，**由渠道绑定的插件决定**谁执行，见[迁移](#从官方-typesafe-插件迁移)。
+- 如果同时安装了官方 TypeSafe 插件，双方可能共享 `/v1/systemone`。正常情况下由模型和渠道绑定决定实际执行插件；如果遇到路由竞争或请求未进入 Decision，改用 `/decision/v1/systemone`。**只使用 Decision 不需要另装 TypeSafe 插件**，见[迁移](#从官方-typesafe-插件迁移)。
 
 ```text
             客户端协议                         上游协议（按渠道/模型配置）
@@ -399,7 +399,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 1. 安装 Decision，不用停用 TypeSafe 插件。
 2. 把 TypeSafe 渠道的插件改成 Decision。插件配置默认就是 `systemone`，Base URL、密钥、模型和重定向都不用改。`/v1/systemone` 两个插件都能接，由渠道绑定的插件执行。
 3. 价格：Jev 模型现有的 `u("input_tokens")` 模型级表达式可以继续用，不需要插件覆盖价。两个插件共享同名模型时，表达式只能引用两边都有的字段；原表达式用了 `u("output_tokens")` 也没关系，Decision 也有这个字段。
-4. 没有渠道再绑定 TypeSafe 插件后再停用它。停用前，`/typesafe/...` 前缀路径仍然归 TypeSafe 插件。
+4. 没有渠道再绑定官方 TypeSafe 插件后即可停用它。迁移完成后优先使用 `/v1/systemone`；若有实际路由冲突，再使用 `/decision/v1/systemone`。
 
 ## 多模态
 
@@ -427,7 +427,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 | 模型广场显示「特殊计费表达式」、无法展开价格表 | 一般是展示解析器不支持当前写法，不等于扣费失败；按[表达式写法说明](#任务表达式写法与模型广场价格展示)调整格式，再用消费日志核对 |
 | `unsupported_modality` / `unsupported_question_type` | 上游协议不支持这种内容或题型，换上游协议或改请求 |
 | `limit_exceeded` | 超过上游的问题数、选项数或等级数；插件不拆分请求 |
-| `/typesafe/v1/systemone` 返回 503 | 装了官方 TypeSafe 插件时这个前缀归它，用 `/v1/systemone` 或 `/decision/...` |
+| `/v1/systemone` 未进入 Decision 或出现路由冲突 | 检查模型与渠道绑定，必要时使用 `/decision/v1/systemone` 明确指定本插件 |
 | 回复里 `answers` 的键顺序和请求不同 | New API 按键名排序输出 JSON 对象；按键取值即可，OpenAI 格式的数组顺序不变 |
 
 ## 已知限制
