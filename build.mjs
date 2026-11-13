@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 // Dependency order; plugin.js is the entry and keeps its exports.
-const MODULES = ["util.js", "ir.js", "systemone.js", "databricks.js", "openai.js", "gemini.js", "vercel.js", "protocols.js", "channel.js", "models.js", "billing.js", "plugin.js"];
+const MODULES = ["util.js", "ir.js", "systemone.js", "databricks.js", "extractions.js", "openai.js", "gemini.js", "vercel.js", "protocols.js", "channel.js", "models.js", "billing.js", "plugin.js"];
 
 const HEADER = `// Decision — New API decision model gateway (task plugin, API v1).
 // https://github.com/yiyinfaith/new-api-plugin-decision

@@ -17,12 +17,7 @@ const { meta } = await import(new URL("../plugin.js", import.meta.url));
 
 // Catalog entries that are not decision or extraction models served by this
 // plugin, with the reason.
-const IGNORED = {
-  "cloudflare/clairic": "extraction model; the Extractions API is planned for 1.1.0",
-  "inference-net/schematron-v2-small": "extraction model; the Extractions API is planned for 1.1.0",
-  "inference-net/schematron-v2-turbo": "extraction model; the Extractions API is planned for 1.1.0",
-  "scaledown/extract": "extraction model; the Extractions API is planned for 1.1.0",
-};
+const IGNORED = {};
 
 async function json(url) {
   const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "decision-model-sync" }, signal: AbortSignal.timeout(60000) });

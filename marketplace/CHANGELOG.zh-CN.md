@@ -1,23 +1,25 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.3"
+version: "1.1.0"
 locale: "zh-CN"
 ---
 # Changelog
 
-## [1.0.3]
+## [1.1.0]
 
 ### Added
 
-- 可以按上游报告的费用计费。回复里带有美元费用时，插件把它上报为用量字段 `upstream_cost`，来源包括 OpenRouter、ScaleDown、OpenCode 的 `usage.cost` 和 Eden AI 顶层的 `cost`。成本加价表达式如 `(u("upstream_cost") ?? (token 价)) * 1.2`：预扣按 token 价，结算按上游费用。费用不会返回给客户端。
+- 可以从文本或图片中抽取有类型的值。客户端按 OpenRouter Extractions API 的格式调用 `POST /api/alpha/extractions`，渠道发往 OpenRouter（协议 `extractions`）或 Cloudflare Workers AI Clairic（协议 `clairic`）。已声明 `cloudflare/clairic`、`scaledown/extract`、Schematron 等抽取模型。
+- 可以把决策请求发往 Parallel 官方接口（协议 `parallel`，不带模型字段，用 `x-api-key`）和 Cloudflare Workers AI 的 `openai/decisions`（协议 `cloudflare_openai`）。
+- 用渠道的 `imageMode`，按兼容 System One 的厂商各自的写法发送图片：Ollama 的 Base64 字符串、SubQ 的 `{mediaType, base64}`、Cloudflare Clef 的 `{content_type, base64}`，以及 Perplexity、Requesty、Inception 的 `state` 内 `image_url`。
+- 所有 System One 路由都可以使用厂商自有题型，如 Perplexity `locate`、Inception `extract`、Respan `number`，原样发往 System One 族上游。
 
-- 渠道新增 `perCallPrice` 设置（默认关），打开后可以使用模型的固定按次价格，回复有没有用量或费用都能正常调用。默认关的原因：插件分不清固定价格和倍率，而 New API 对倍率定价的模型按每次「倍率 ÷ 2」美元扣费。
+### Fixed
 
-### Changed
-
-- 回复缺少用量时改为按一次请求结算：`u("requests")` 价格能准确结算，token 表达式仍按预扣额度结算，不会按 0 计费。
+- 图片写法不是 `assets` 时，上传的图片不再作为 multipart 分段转发。
 
 ### Migration
 
-- 决策价格要计入缓存 token。大多数决策模型的缓存读取和输入同价，但插件把缓存 token 单独上报为 `cache_read_tokens`，表达式只读 `input_tokens` 时它们就不收费了。README 提供了常见模型的价格模板，三个输入字段都按输入价计费。
+- 抽取模型和决策模型一样，用模型级任务表达式定价。
+- 要给 SubQ、Ollama、Cloudflare Clef、Perplexity、Requesty 或 Inception 发图片，请设置渠道的 `imageMode`。

@@ -1,5 +1,22 @@
 # 更新日志
 
+## 1.1.0（2026-11-13）
+
+新增抽取任务和更多厂商协议。
+
+- **抽取（Extractions）**：
+  - 新增客户端路由 `POST /api/alpha/extractions`，格式同 OpenRouter Extractions API：按字段定义从文本或图片中抽取有类型的值。字段类型有 text、number、date、time、datetime、duration、list、estimate、forecast，按 OpenRouter 的 schema 严格校验。
+  - 新增上游协议 `extractions`（OpenRouter，或另一台装了本插件的 New API）和 `clairic`（Cloudflare Workers AI 官方接口，图片转成它的 `images` 数组）。
+  - 决策和抽取请求互不转换，发错协议时明确报错。
+  - 声明抽取模型 `cloudflare/clairic`、`clairic`、`scaledown/extract`、`inference-net/schematron-v2-small`、`inference-net/schematron-v2-turbo`、`inception/mercury-decide`、`levanto/sage-2`。
+- **新上游协议**：
+  - `parallel`：Parallel 官方接口，不带模型、用 `x-api-key`，按 Parallel 的限制检查题目。
+  - `cloudflare_openai`：Cloudflare Workers AI 的 `openai/decisions`，OpenAI 请求体包在 `{model, input}` 里，自动拆开 Workers AI 的回复外层和 `success: false` 错误。
+- **图片写法 `imageMode`**：兼容 System One 的厂商可以收到它们自己的图片写法：Ollama 的 Base64 字符串、SubQ 的 `{mediaType, base64}`、Cloudflare Clef 的 `{content_type, base64}`，以及 Perplexity、Requesty、Inception 的 `state` 内 `image_url`。之前这些厂商只能发文本。
+- **厂商自有题型**：`/v1/systemone` 等所有 System One 路由都接受 Perplexity `locate`、Inception `extract`、Respan `number` 等题型，原样发往 System One 族上游；其它协议仍明确拒绝。
+- **修复**：图片写法不是 `assets` 时，上传的图片文件不再被当作 multipart 分段转发。
+- 测试：N × N 矩阵扩展到 8 种客户端格式 × 9 种上游协议，新增抽取和厂商格式测试，共 159 个。
+
 ## 1.0.3（2026-11-13）
 
 按上游实际费用计费，并提供价格模板和模型目录同步。

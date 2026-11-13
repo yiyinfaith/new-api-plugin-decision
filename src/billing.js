@@ -138,6 +138,8 @@ function contentBytes(content, files) {
 
 export function estimateInputTokens(ir, files) {
   let total = TEMPLATE_TOKENS + contentBytes(ir.input, files);
+  // Extraction field definitions are read as part of the input.
+  if (ir.fields) total += utf8Length(JSON.stringify(ir.fields)) + QUESTION_TOKENS * Object.keys(ir.fields).length;
   for (const question of ir.questions) {
     total += QUESTION_TOKENS + utf8Length(question.name);
     total += contentBytes(question.instructions, files) + contentBytes(question.trueText, files) + contentBytes(question.falseText, files);
@@ -155,7 +157,8 @@ export function reservationFacts(ir, files, route, longContext, upstreamModel, m
   if (route.upstream.noUsage) return requestFacts();
   const cap = route.reserveTokens || (longContext && route.upstream.longContextTokens) || route.upstream.contextTokens;
   const tokens = Math.min(estimateInputTokens(ir, files), cap);
-  return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * ir.questions.length }, upstreamModel, model);
+  const answers = ir.questions.length || Object.keys(ir.fields || {}).length;
+  return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * answers }, upstreamModel, model);
 }
 
 export function usageFromTaskData(data) {

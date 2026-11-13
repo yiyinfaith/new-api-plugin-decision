@@ -6,7 +6,7 @@ import { run } from "./harness.mjs";
 
 import { CLIENT_BODIES, LEVELS } from "./fixtures.mjs";
 
-const UPSTREAMS = ["systemone", "openrouter", "openai", "gemini", "vercel", "vercel_sdk", "databricks"];
+const UPSTREAMS = ["systemone", "openrouter", "openai", "gemini", "vercel", "vercel_sdk", "databricks", "parallel", "cloudflare_openai"];
 const SCORE = 0.2 + 2 * 0.2;
 
 // tokens: whether the upstream reports token usage (Databricks does not).
@@ -78,7 +78,9 @@ for (const client of Object.keys(CLIENT_BODIES)) {
   for (const upstream of UPSTREAMS) {
     test(`${client} client -> ${upstream} upstream`, () => {
       const { path, body } = CLIENT_BODIES[client];
-      const result = run(path, body, { config: { protocol: upstream } });
+      // Cloudflare's run endpoint takes the one model openai/decisions.
+      const config = upstream === "cloudflare_openai" ? { protocol: upstream, upstreamModels: { [body.model]: "openai/decisions" } } : { protocol: upstream };
+      const result = run(path, body, { config });
       assert.equal(result.upstream.status, 200, JSON.stringify(result.upstream.body));
       checkReply(client, result.reply, upstream !== "databricks");
       assert.ok(result.settled, String(result.settleError));
@@ -87,6 +89,9 @@ for (const client of Object.keys(CLIENT_BODIES)) {
         assert.deepEqual(result.reserved, { requests: 1 });
         assert.deepEqual(result.settled, { requests: 1 });
         assert.equal(result.request.body.model, undefined);
+      } else if (upstream === "parallel") {
+        assert.equal(result.request.body.model, undefined);
+        if (!("long_context" in result.settled)) assert.equal(result.settled.requests, 1);
       } else {
         // The reservation bounds the settled input from above.
         assert.ok(result.reserved.input_tokens >= result.settled.input_tokens, JSON.stringify([result.reserved, result.settled]));

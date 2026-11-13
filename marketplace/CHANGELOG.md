@@ -1,25 +1,27 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.3"
+version: "1.1.0"
 locale: "en"
 translations:
   zh-CN: CHANGELOG.zh-CN.md
 ---
 # Changelog
 
-## [1.0.3]
+## [1.1.0]
 
 ### Added
 
-- Bill at the cost the upstream reports. When a reply carries a USD cost, such as `usage.cost` from OpenRouter, ScaleDown or OpenCode, or Eden AI's top-level `cost`, the plugin reports it as the usage field `upstream_cost`. A cost-plus expression such as `(u("upstream_cost") ?? (<token price>)) * 1.2` reserves at the token price and settles at the reported cost. The cost is never returned to clients.
+- Extract typed values from text or images. Clients call `POST /api/alpha/extractions` in the format of OpenRouter's Extractions API, and channels send it to OpenRouter (protocol `extractions`) or to Cloudflare Workers AI Clairic (protocol `clairic`). Extraction models such as `cloudflare/clairic`, `scaledown/extract` and the Schematron models are declared.
+- Send decisions to Parallel's own API (protocol `parallel`, no model field, `x-api-key`) and to Cloudflare Workers AI `openai/decisions` (protocol `cloudflare_openai`).
+- Send images to System One-compatible vendors in their own format with the channel's `imageMode`: Ollama base64 strings, SubQ `{mediaType, base64}`, Cloudflare Clef `{content_type, base64}`, or `image_url` parts in the state for Perplexity, Requesty and Inception.
+- Ask vendor question types, such as Perplexity `locate`, Inception `extract` and Respan `number`, on every System One route. They reach System One-family upstreams as written.
 
-- Accept a fixed per-call model price on a channel with the new `perCallPrice` setting (off by default). Requests then work whether or not the reply carries usage or a cost. The setting is off by default because the plugin cannot tell a fixed price from a ratio, and New API charges a ratio-priced model half its ratio in USD per call.
+### Fixed
 
-### Changed
-
-- A reply without usage now settles as one request. A `u("requests")` price bills exactly, and a token expression still settles at the reserved amount, never at zero.
+- With an image mode other than `assets`, uploaded images are no longer forwarded as multipart parts.
 
 ### Migration
 
-- Charge cached input in decision prices. Most decision models bill cached input at the input price, but the plugin reports cached tokens as `cache_read_tokens`, so an expression that reads only `input_tokens` leaves them free. The README has a price template for common models that bills all three input fields.
+- Price extraction models with a model-level task expression, as for decisions.
+- To send images to SubQ, Ollama, Cloudflare Clef, Perplexity, Requesty or Inception, set the channel's `imageMode`.

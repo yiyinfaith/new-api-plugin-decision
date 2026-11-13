@@ -83,6 +83,8 @@ export const MODEL_GROUPS = [
   { vendor: "OpenRouter-only", models: ["heygen/heygen-decision-1", "heygen/heygen-decision-1-turbo", "jaredpalmer/kev-4b", "parallel/decisions-fast:free"] },
   // Vercel AI Gateway
   { vendor: "Parallel", models: ["parallel/parallel-decisions-fast"] },
+  // Extractions: OpenRouter's /api/alpha/extractions model list and Workers AI
+  { vendor: "Extraction models", models: ["cloudflare/clairic", "clairic", "scaledown/extract", "inference-net/schematron-v2-small", "inference-net/schematron-v2-turbo", "inception/mercury-decide", "levanto/sage-2"] },
 ];
 
 export const MODELS = MODEL_GROUPS.reduce((all, group) => all.concat(group.models), []).concat([CUSTOM_SLOT]);

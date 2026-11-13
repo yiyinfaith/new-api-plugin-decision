@@ -2,13 +2,14 @@
 
 NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意模型接入、自定义上游协议及路径、智能路由与灵活计费。
 
-- **N × N 协议互通**：客户端可以用 TypeSafe System One、OpenAI Decisions、Gemini Decisions、Vercel Evaluation、OpenRouter、Databricks ai-decide 任一格式请求，上游可以是其中任一协议。插件经统一中间表示（Decision IR）转换请求，并把回复转回客户端自己的格式。
+- **N × N 协议互通**：客户端可以用 TypeSafe System One、OpenAI Decisions、Gemini Decisions、Vercel Evaluation、OpenRouter、Databricks ai-decide 任一格式请求，上游可以是其中任一协议，也可以是 Parallel、Cloudflare Workers AI 的原生接口。插件经统一中间表示（Decision IR）转换请求，并把回复转回客户端自己的格式。
 - **上游协议手动指定**：在渠道里选协议、路径和密钥请求头，可按模型分别覆盖；从不根据域名猜协议，未知中转站也能接。
+- **抽取（Extractions）**：支持 OpenRouter 的 Extractions API，从文本或图片里抽取有类型的字段，上游可以是 OpenRouter 或 Cloudflare Clairic，见[抽取](#抽取extractions)。
 - **常见模型开箱即用**：声明了 100 多个经官方文档或模型目录核实的决策模型 ID（Jev、Liquid d1、Laya、OpenAI、Gemini、Perplexity 等），渠道里直接勾选；其它名字重定向到 `decision-custom` 即可，见[模型](#模型)。
 - **按真实用量计费**：输入、缓存读取、缓存写入、输出分开上报。普通模型直接用 New API 的模型级任务表达式；只有 `gpt-6-luna` 要另配插件覆盖价，和它的普通聊天计费互不影响。不报用量的 Databricks ai-decide 按次计费。
 - **完整保留官方 TypeSafe 插件的能力**：四种问题类型、图片、SDK 的 multipart 上传、长上下文、错误格式、JSON 键顺序。
 
-当前版本：v1.0.3，渠道配置（`channelConfig`）需要 rc.50 及以上。
+当前版本：v1.1.0，渠道配置（`channelConfig`）需要 rc.50 及以上。
 
 **完整的接口字段、转换规则、兼容性矩阵和报错格式见 [API.md](API.md)。**
 
@@ -35,6 +36,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 | 按模型指定上游协议 `modelProtocols` | `{"模型名": "协议"}`，覆盖渠道协议 |
 | 按模型指定上游路径 `modelPaths` | `{"模型名": "/路径"}`，覆盖渠道路径 |
 | 按模型指定上游模型 ID `upstreamModels` | `{"模型名": "上游 ID"}`，覆盖模型重定向后的名字 |
+| System One 上游的图片写法 `imageMode` | 默认 `assets`（TypeSafe）。兼容 System One、但图片写法不同的厂商要改：`images-base64`（Ollama）、`images-subq`（SubQ）、`images-cloudflare`（Cloudflare Clef）、`state-image-url`（Perplexity、Requesty、Inception），见[多模态](#多模态) |
 | 允许模型固定按次价格 `perCallPrice` | 默认关。打开后，本渠道的模型可以用 New API 的固定价格（按次计费），上游回复有没有用量、有没有费用都能正常调用，见[按次计费](#按次计费模型固定价格) |
 | 缺少指令时用问题名补上 `fillInstructions` | 默认关。发往 System One 族上游时，没写 `instructions` 的问题用问题名补上；OpenCSG、Telnyx、Requesty 等要求每题都有指令的上游需要打开 |
 | 单次问题数上限 `maxQuestions` | 0 = 协议上限（OpenAI 400，其余不限）；超出直接报错，不拆分 |
@@ -51,6 +53,10 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 | `vercel` | `/v1/evaluate` | Bearer | Vercel AI Gateway Evaluation（旧接口，仍可用） |
 | `vercel_sdk` | `/v4/ai/evaluation-model` | Bearer | Vercel AI SDK 内部接口（模型放在 `ai-model-id` 头），兼容旧版 TypeSafe 插件用过的写法 |
 | `databricks` | `/api/2.0/ai-functions/ai-decide` | Bearer | Databricks AI Functions ai-decide（Beta）。请求里不带模型，回复没有 token 用量，[按次计费](#databricks-ai-decide按次计费) |
+| `parallel` | `/v1/decisions` | `x-api-key` | Parallel 官方接口，Base URL `https://api.parallel.ai`。请求里不带模型、不能带图片；Parallel 按次收费，价格用 `u("requests") * 0.001` |
+| `cloudflare_openai` | `/ai/run` | Bearer | Cloudflare Workers AI 的 `openai/decisions`（GPT-6 Luna），Base URL `https://api.cloudflare.com/client/v4/accounts/<账号ID>`，`upstreamModels` 把模型映射为 `openai/decisions`；图片只能是 data URL |
+| `extractions` | `/api/alpha/extractions` | Bearer | [抽取](#抽取extractions)：OpenRouter Extractions API，Base URL `https://openrouter.ai` |
+| `clairic` | `/ai/run/@cf/cloudflare/clairic` | Bearer | [抽取](#抽取extractions)：Cloudflare Workers AI Clairic，Base URL `https://api.cloudflare.com/client/v4/accounts/<账号ID>`，上游模型 `clairic` |
 
 - Base URL 末尾已带路径第一段时不会重复：`https://api.typesafe.ai/v1` + `/v1/systemone` → `https://api.typesafe.ai/v1/systemone`。
 - 地址带账号 ID 的平台（如 Cloudflare Workers AI）把完整路径写进 `path`，例如 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}`；Workers AI 外层的 `{result, success}` 会自动拆开。
@@ -98,15 +104,15 @@ New API 只把插件声明过的模型、或重定向到声明模型的名字交
 | Google Gemini | `gemini-decision-1`、`google/gemini-decision-1` | `gemini` |
 | Liquid AI | `d1.1`、`d1-ultra`；`liquid/d1`、`liquid/d1.1`、`liquid/d1-ultra`、`~liquid/d1-latest`、`~liquid/d1-ultra-latest` | 官方 `systemone`，Base URL `https://api.liquid.ai/decisions`；带前缀的是 OpenRouter / Vercel 写法 |
 | Laya（Convai Innovations） | `convaiinnovations/laya` | Vercel AI Gateway；自建 `laya-serve` 见下 |
-| Perplexity | `pplx-decider-v1.3`、`pplx-decider-flash-v1.3`、`pplx-decider-v1.2`、`pplx-decider-flash-v1.2`、`pplx-decider-latest`、`pplx-decider-flash-latest`、旧名 `pplx-decider-v1.1-27b`、`pplx-decider-v1-27b`；`perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-flash-v1.3`、`perplexity/pplx-decider-v1.2`、`perplexity/pplx-decider-flash-v1.2`、`perplexity/pplx-decider-latest`、`perplexity/pplx-decider-flash-latest`、`perplexity/pplx-decider-v1.3:free`、`perplexity/pplx-decider-flash-v1.3:free`、`~perplexity/pplx-decider-latest`、`~perplexity/pplx-decider-flash-latest` | 官方 `systemone` + 路径 `/v1/decisions` |
+| Perplexity（发图片时 `imageMode` 选 `state-image-url`） | `pplx-decider-v1.3`、`pplx-decider-flash-v1.3`、`pplx-decider-v1.2`、`pplx-decider-flash-v1.2`、`pplx-decider-latest`、`pplx-decider-flash-latest`、旧名 `pplx-decider-v1.1-27b`、`pplx-decider-v1-27b`；`perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-flash-v1.3`、`perplexity/pplx-decider-v1.2`、`perplexity/pplx-decider-flash-v1.2`、`perplexity/pplx-decider-latest`、`perplexity/pplx-decider-flash-latest`、`perplexity/pplx-decider-v1.3:free`、`perplexity/pplx-decider-flash-v1.3:free`、`~perplexity/pplx-decider-latest`、`~perplexity/pplx-decider-flash-latest` | 官方 `systemone` + 路径 `/v1/decisions` |
 | Microsoft | `microsoft-decision-1`、`microsoft/microsoft-decision-1` | Foundry 用 `systemone` + 路径 `/providers/microsoft/v1/systemone`，模型重定向到你的部署名 |
 | Upstage | `solar-decide`、`upstage/solar-decide`、`upstage/solar-decide-flash` | `systemone` |
 | Bespoke Labs Nimble | `nimble-latest`、`nimble-v4.1-max`、`nimble-v4-max`、`nimble-v4`、`nimble-v3` | `systemone`，`maxQuestions` 64 |
-| SubQ | `subq-snap-1.2`、`subq-snap-1.1`、`subq-snap-latest`、`subq-snap-preview` | `systemone`（只发文本） |
-| Inception | `mercury-decide` | `systemone` + 路径 `/v1/decisions` |
+| SubQ | `subq-snap-1.2`、`subq-snap-1.1`、`subq-snap-latest`、`subq-snap-preview` | `systemone`，`imageMode` 选 `images-subq` |
+| Inception | `mercury-decide` | `systemone` + 路径 `/v1/decisions`，`imageMode` 选 `state-image-url` |
 | Telnyx | `telnyx/decision-flash`、`telnyx/decision-pro` | `systemone` + 路径 `/v2/ai/typesafe/v1/systemone`，打开 `fillInstructions` |
-| Cloudflare Clef | `clef`、`clef-flash`、`clef-omni`；`cloudflare/clef`、`cloudflare/clef-flash`、`cloudflare/clef-omni` | Workers AI 用 `systemone` + 路径 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}` |
-| Ollama | `nimble`、`clef:cloud` | `systemone` |
+| Cloudflare Clef | `clef`、`clef-flash`、`clef-omni`；`cloudflare/clef`、`cloudflare/clef-flash`、`cloudflare/clef-omni` | Workers AI 用 `systemone` + 路径 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}`，`imageMode` 选 `images-cloudflare` |
+| Ollama | `nimble`、`clef:cloud` | `systemone`，`imageMode` 选 `images-base64` |
 | ScaleDown | `classify`、`classify-1`、`scaledown/classify-1`、`scaledown/scaledown-classify-1` | `systemone` + 路径 `/v1/scaledown` |
 | Baseten | `decision-models/baseten-joey-2b-latest`、`decision-models/baseten-elephant-9b-latest`、`decision-models/baseten-mammoth-27b-latest`；`baseten/joey-1`、`baseten/elephant-1`、`baseten/mammoth-1` | `systemone`，Base URL `https://inference.baseten.co` |
 | Fireworks | `accounts/fireworks/models/rune` | `systemone` + 路径 `/inference/v1/systemone`，或 `openai` + `/inference/v1/decisions` |
@@ -115,7 +121,8 @@ New API 只把插件声明过的模型、或重定向到声明模型的名字交
 | Respan | `span-02`、`respan/span-02`、`respan/span-01`、`respan/span-01-lite`、`respan/span-01-lite:free` | `systemone` + 路径 `/api/v1/systemone` |
 | Together AI | `together/Tev1-4B-experimental`、`togethercomputer/tev1-4b-experimental` | 按 Together / OpenRouter 的接口 |
 | 只在 OpenRouter | `heygen/heygen-decision-1`、`heygen/heygen-decision-1-turbo`、`jaredpalmer/kev-4b`、`parallel/decisions-fast:free` | `openrouter` |
-| Parallel（Vercel） | `parallel/parallel-decisions-fast` | Vercel 的协议 |
+| Parallel | `parallel/parallel-decisions-fast`（Vercel） | Vercel 的协议；Parallel 官方接口用 `parallel` 协议，模型名随意（不发给上游） |
+| 抽取模型（[Extractions](#抽取extractions)） | `cloudflare/clairic`、`clairic`、`scaledown/extract`、`inference-net/schematron-v2-small`、`inference-net/schematron-v2-turbo`、`inception/mercury-decide`、`levanto/sage-2`，以及决策模型 `perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-flash-v1.3` | `extractions`（OpenRouter）；`clairic`（Cloudflare Workers AI） |
 | 其它任意名字 | 路由槽位 `decision-custom` | 见[完整示例](#完整示例接入任意模型名) |
 
 - **按渠道选写法**：同一个模型在不同平台的 ID 不同（Liquid 官方是 `d1.1`，OpenRouter 是 `liquid/d1.1`）。上游默认收到渠道里的这个名字，所以要勾选和渠道上游一致的写法；想对外统一用一个名字时，用模型重定向或 `upstreamModels` 换成上游的写法，见[下文](#示例声明的模型换上游-id)。
@@ -197,6 +204,7 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
 | Vercel Evaluation | `POST /v1/evaluate` |
 | ScaleDown | `POST /v1/scaledown` |
 | Databricks ai-decide | `POST /api/2.0/ai-functions/ai-decide`（请求体加 `model`，供 New API 路由） |
+| OpenRouter Extractions（[抽取](#抽取extractions)） | `POST /api/alpha/extractions` |
 
 - `/v1/decisions` 按请求体区分：`input` + `questions` 数组是 OpenAI 格式；`state` 或 `questions` 对象是 Perplexity、Inception、Requesty 使用的 System One 形状，按 System One 处理，并返回 System One 格式。
 - 鉴权只认 New API 令牌的 Bearer 写法：`Authorization: Bearer sk-...`。New API 只给内置的 google、vidu 插件转换厂商密钥头，所以本插件的路由不认 `x-goog-api-key`、`api-key`、`x-api-key`。
@@ -215,7 +223,8 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
  Gemini     ─┤                           ├─ OpenAI Decisions（含 Azure 等）
  Vercel     ─┼─ 解码 → Decision IR → 编码 ─┼─ Gemini Decisions
  OpenRouter ─┤                           ├─ Vercel Evaluation / AI SDK
- Databricks ─┘   回复按原路转回客户端格式    └─ Databricks ai-decide
+ Databricks ─┘   回复按原路转回客户端格式    ├─ Databricks ai-decide
+                                           └─ Parallel、Cloudflare openai/decisions
 ```
 
 ### Curl 示例
@@ -265,6 +274,32 @@ curl https://你的域名/api/2.0/ai-functions/ai-decide -H "Authorization: Bear
 ```
 
 回复永远是客户端那种格式；各格式的回复字段见 [API.md](API.md#回复)。
+
+## 抽取（Extractions）
+
+抽取是和决策并列的另一种任务：给一段文本（或图片），按字段定义抽出有类型的值，每个字段带置信度、原文位置和"没有这一项"的概率。客户端用 [OpenRouter Extractions API](https://openrouter.ai/docs/api/api-reference/alphaextractions/submit-an-extractions-request) 的格式请求 `POST /api/alpha/extractions`。
+
+- 渠道上游协议选 `extractions`（OpenRouter，或另一台装了本插件的 New API）或 `clairic`（Cloudflare Workers AI 官方接口）。同一个渠道既有决策模型又有抽取模型时，用 `modelProtocols` 给抽取模型单独指定。
+- 字段类型：`text`、`number`、`date`、`time`、`datetime`、`duration`、`list`、`estimate`、`forecast`；各类型可用的键（`instructions`、`unit`、`decimals`、`items`、`min`/`max` 等）和 OpenRouter 文档一致，多写或写错的键直接报错。
+- 图片放在 `assets` 里（PNG、JPEG、WebP、PDF 的 Base64），在 `state` 或字段的 `instructions` 里写它的键来引用；`state` 为空或正好是唯一图片的键时，按"只读文件"处理。发往 Clairic 时图片转成它的 `images` 数组（最多 4 张，不支持 PDF）。
+- 决策请求和抽取请求不会互相转换：抽取请求发到决策协议的渠道（或反过来）会直接报错。
+- 计费和决策相同，用模型级任务表达式；字段是 `input_tokens`、`output_tokens`、`requests`，OpenRouter 回复里的费用是 `upstream_cost`。Clairic 官方价格为每百万输入 0.10 美元，输出免费。
+- ScaleDown `extract`、Inference.net Schematron 的官方接口是 OpenAI Chat Completions + JSON Schema，不是这种格式；经 OpenRouter 的 `extractions` 协议调用它们即可。
+
+```bash
+curl https://你的域名/api/alpha/extractions -H "Authorization: Bearer $NEW_API_KEY" -H "Content-Type: application/json" -d '{
+  "model": "cloudflare/clairic",
+  "state": "Invoice INV-7, due 1 Dec 2026. Total 41.50 USD.",
+  "reference_date": "2026-11-13",
+  "fields": {
+    "invoice_number": {"type": "text"},
+    "due_date": {"type": "date", "instructions": "When payment is due"},
+    "total": {"type": "number", "decimals": 2, "unit": "USD"}
+  }
+}'
+```
+
+回复是 OpenRouter 的格式：`{id, model, provider, answers: {字段名: {type, value, guess, p_null, confidence, span…}}, truncated, usage}`，见 [API.md](API.md#extractions)。
 
 ## 计费
 
@@ -500,6 +535,9 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 | 音频、视频、PDF | ✗ | ✗ | ✓ | 交给 Vercel 路由的模型 | ✗ |
 | Box 定位题 | ✓（需 Jev 1.14） | 交给上游（OpenAI 官方不支持，Vercel/LiteLLM/Bifrost 支持） | ✗ | ✓ | ✗ |
 
+- System One 上游一列按 TypeSafe 的 `assets` 写法。兼容 System One 的其它厂商用渠道的 `imageMode` 选它们的写法：Ollama `images-base64`、SubQ `images-subq`、Cloudflare Clef `images-cloudflare`、Perplexity / Requesty / Inception `state-image-url`。这些写法只接受共享输入（state）里的 Base64 或上传图片，不接受图片 URL，也不接受指令、选项里的图片。
+- Parallel 不接受图片；Cloudflare `openai/decisions` 只接受 data URL 图片。
+
 不支持的内容直接报错，不转成文字、不丢弃。System One 把图片引用放在 JSON 对象里时，只能发往 System One 上游。详见 [API.md](API.md#多模态)。
 
 ## 常见问题
@@ -527,7 +565,8 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 - multipart 转发给 System One 时，宿主写的 `request` 分段没有 `Content-Type` 头，和官方 TypeSafe 插件相同。
 - 价格配置不对时宿主隐藏插件的说明文字，只显示 `plugin usage hook failed`。
 - Gemini Decisions、Vercel Evaluation 的部分字段只在第三方资料或 SDK 文档中出现，按 [API.md](API.md#兼容性) 的标注使用。
-- 只用严格的模拟上游测过、还没有真实渠道的：OpenAI Decisions、Gemini Decisions、Databricks ai-decide。System One 上游用真实中转（OpenCode、OpenCSG）测过五种客户端格式。
+- 只用严格的模拟上游测过、还没有真实渠道的：Databricks ai-decide、Parallel、Cloudflare Workers AI（openai/decisions、Clairic）、OpenRouter Extractions，以及 `imageMode` 的各种图片写法。OpenAI Decisions、Gemini Decisions（官方渠道）和 System One（OpenCode、OpenCSG）已用真实上游测过。
+- Extractions 是 OpenRouter 的 Alpha 接口，字段可能变化；Perplexity `locate`、Inception `extract`、Respan `number` 等厂商自有题型只能发往 System One 族上游，不做跨协议转换。
 
 ## 开发与测试
 
@@ -548,7 +587,7 @@ NA_BASE=http://127.0.0.1:49300 MOCK=http://127.0.0.1:49311 python3 tests/e2e/e2e
 
 源码分层：
 
-- `src/systemone.js`、`openai.js`、`gemini.js`、`vercel.js`、`databricks.js`：各管一个协议的解码、编码、回复解析和渲染。
+- `src/systemone.js`、`openai.js`、`gemini.js`、`vercel.js`、`databricks.js`、`extractions.js`：各管一个协议的解码、编码、回复解析和渲染（Parallel 在 `systemone.js`，Cloudflare `openai/decisions` 在 `protocols.js`）。
 - `ir.js`：中间表示。
 - `protocols.js`：协议注册表和路由。
 - `channel.js`：渠道配置。

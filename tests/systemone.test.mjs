@@ -31,7 +31,7 @@ test("rejects what TypeSafe rejects", () => {
   rejects(Object.assign(body(), { model: "" }), /model is required/);
   rejects(Object.assign(body(), { state: null }), /state must be text, an object, or an array/);
   rejects(Object.assign(body(), { questions: {} }), /questions must be a nonempty object/);
-  rejects(body({ questions: { q: { type: "rank" } } }), /must have type choice, score, noul, or box/);
+  rejects(body({ questions: { q: { type: "" } } }), /must have type choice, score, noul, or box/);
   rejects(body({ questions: { q: { type: "choice", criteria: {} } } }), /between 1 and 255 options/);
   const many = {};
   for (let index = 0; index < 256; index++) many["o" + index] = null;

@@ -10,7 +10,7 @@ A gateway for decision models: typed questions answered with probabilities. Clie
 
 - Choose the Task Plugin (61) channel type and bind the Decision plugin.
 - Enter the upstream base URL without an endpoint path, and the upstream API key as it is.
-- In the plugin settings, choose the upstream protocol: `systemone` (default), `openrouter`, `openai`, `gemini`, `vercel`, `vercel_sdk` or `databricks`. The plugin never guesses it from the host.
+- In the plugin settings, choose the upstream protocol: `systemone` (default), `openrouter`, `openai`, `gemini`, `vercel`, `vercel_sdk`, `databricks`, `parallel` or `cloudflare_openai`; for extractions, `extractions` or `clairic`. System One-compatible vendors that take images their own way are set with `imageMode`. The plugin never guesses it from the host.
 - Optional settings: a custom upstream path, where `{model}` stands for the upstream model; the key header (Bearer, `x-goog-api-key`, `api-key`, `x-api-key` or a custom header); and a protocol, path or upstream model ID per model.
 - To call another New API gateway with this plugin, choose New API (60) and add Decision to its extension plugins.
 
@@ -25,6 +25,7 @@ A gateway for decision models: typed questions answered with probabilities. Clie
 | `POST /v1/evaluate` | Vercel Evaluation |
 | `POST /v1/scaledown` | ScaleDown |
 | `POST /api/2.0/ai-functions/ai-decide` | Databricks ai-decide, with a `model` for routing |
+| `POST /api/alpha/extractions` | OpenRouter Extractions (typed values from text or images) |
 
 Every path is also served under `/decision`, for use only when a path conflicts with New API or another plugin. Over 100 decision models are declared, so they can be picked on a channel directly: TypeSafe Jev, Liquid d1, Laya, OpenAI `gpt-6-luna`, Gemini Decision 1, Perplexity Decider, Microsoft Decision 1, Upstage, Nimble, SubQ, Mercury Decide, Telnyx, Cloudflare Clef, ScaleDown, Baseten, Fireworks, Drex, Reflex, Respan and Tev1, under their vendor IDs and their OpenRouter and Vercel names. For any other model name, list it on the channel and map it to `decision-custom`; the upstream receives the client's name, or the ID set in `upstreamModels`.
 

@@ -260,11 +260,16 @@ function requireUniqueNames(questions) {
 // sink.assets, with a fresh id per image as TypeSafe recommends.
 function contentToSystemOne(content, sink, where) {
   if (!content || content.length === 0) return null;
-  const items = content.map(function (segment) {
-    if (segment.t === "text") return segment.text;
-    if (segment.t === "json") return segment.value;
-    return sink.add(segment, where);
-  });
+  // A sink returns nothing for an image it sends outside the content (a
+  // top-level images array).
+  const items = content
+    .map(function (segment) {
+      if (segment.t === "text") return segment.text;
+      if (segment.t === "json") return segment.value;
+      return sink.add(segment, where);
+    })
+    .filter((item) => item !== undefined);
+  if (items.length === 0) return null;
   if (items.length === 1) return items[0];
   // Adjacent strings stay separate array items; System One reads an array of
   // text values in order.
@@ -296,6 +301,7 @@ const S1_BASE_FIELDS = ["model", "state", "questions", "assets"];
 // ignorable ones only label the request and are dropped elsewhere.
 const S1_DIALECT_FIELDS = {
   typesafe: { important: [], ignorable: [] },
+  parallel: { important: [], ignorable: [] },
   openrouter: { important: ["provider"], ignorable: ["session_id", "trace", "user"] },
   scaledown: { important: [], ignorable: [] },
   compat: { important: ["mode", "max_staleness"], ignorable: ["user", "metadata"] },
@@ -424,7 +430,10 @@ function s1Decode(body, dialect, files) {
   if (typeof body.model !== "string" || !body.model.trim()) fail("model is required");
   if (body.state === null || body.state === undefined || !s1IsEntry(body.state)) fail("state must be text, an object, or an array");
   if (!isObject(body.questions) || Object.keys(body.questions).length === 0) fail("questions must be a nonempty object");
-  const allowOtherTypes = dialect === "compat";
+  // Vendor question types (Perplexity locate, Inception extract, Respan
+  // number) reach System One-family upstreams as written; other protocols
+  // refuse them when converting.
+  const allowOtherTypes = true;
   for (const id of Object.keys(body.questions)) s1ValidateQuestion(id, body.questions[id], allowOtherTypes);
   const assets = s1Assets(body.assets, files);
   s1ReferencedAssets(body, assets);
@@ -455,6 +464,42 @@ function s1Decode(body, dialect, files) {
 }
 
 // ---- upstream encoder -------------------------------------------------------
+
+// How a System One-compatible upstream takes images (channel imageMode):
+//   assets             TypeSafe: assets referenced from the text (default)
+//   images-base64      Ollama: top-level images, base64 strings
+//   images-subq        SubQ: top-level images, {mediaType, base64}
+//   images-cloudflare  Cloudflare Clef: top-level images, {content_type, base64}
+//   state-image-url    Perplexity, Requesty, Inception: {type: "image_url",
+//                      image_url: {url: data URL}} parts inside the state
+const IMAGE_MODES = ["assets", "images-base64", "images-subq", "images-cloudflare", "state-image-url"];
+const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+function imageData(segment, encoding) {
+  if (segment.fileRef) return encoding === "dataUrl" ? { __fileRef: segment.fileRef, encoding: "dataUrl", mimeType: segment.mime } : { __fileRef: segment.fileRef, encoding: "base64" };
+  return encoding === "dataUrl" ? "data:" + segment.mime + ";base64," + segment.data : segment.data;
+}
+
+// A sink for the other image modes: images come only from the shared input,
+// as base64 or data URLs, never as remote URLs.
+function s1ImageSink(mode) {
+  const sink = {
+    images: [],
+    add: function (segment, where) {
+      if (segment.kind !== "image") fail(where + " contains " + segment.kind + " content; this upstream accepts images only", "unsupported_modality");
+      if (where !== "The input") fail(where + " has an image; this upstream takes images in the shared input only", "unsupported_content");
+      if (segment.url) fail(where + " has an image URL; this upstream takes images as base64, not URLs", "unsupported_modality");
+      if (IMAGE_MIMES.indexOf(segment.mime) < 0 || (mode === "images-base64" && segment.mime === "image/webp"))
+        fail(where + " has a " + (segment.mime || "unknown") + " image; this upstream accepts PNG and JPEG" + (mode === "images-base64" ? "" : " and WebP"), "unsupported_modality");
+      if (mode === "state-image-url") return { type: "image_url", image_url: { url: imageData(segment, "dataUrl") } };
+      if (mode === "images-base64") sink.images.push(imageData(segment, "base64"));
+      else if (mode === "images-subq") sink.images.push({ mediaType: segment.mime, base64: imageData(segment, "base64") });
+      else sink.images.push({ content_type: segment.mime, base64: imageData(segment, "base64") });
+      return undefined;
+    },
+  };
+  return sink;
+}
 
 function s1Sink(newId) {
   const sink = {
@@ -545,9 +590,11 @@ function s1FillInstructions(questions) {
 // Returns {body, multipartFiles, images}.
 function s1Encode(ir, upstreamDialect, model, newId, options) {
   const fill = !!(options && options.fillInstructions);
+  const imageMode = (options && options.imageMode) || "assets";
   const allowed = S1_DIALECT_FIELDS[upstreamDialect] || S1_DIALECT_FIELDS.typesafe;
-  // A Databricks body is System One's state and questions, so it goes as written too.
-  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough;
+  // A Databricks body is System One's state and questions, so it goes as
+  // written too; System One assets only to an upstream that reads assets.
+  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough && !(ir.hasAssets && imageMode !== "assets");
   const body = { model: model };
   let multipart = null;
   let images = false;
@@ -560,14 +607,16 @@ function s1Encode(ir, upstreamDialect, model, newId, options) {
   } else {
     if (ir.onlyHere && ir.onlyHere.length) fail("The request has " + ir.onlyHere[0] + ", which System One cannot express", "unsupported_content");
     requireUniqueNames(ir.questions);
-    const sink = s1Sink(newId);
+    const sink = imageMode === "assets" ? s1Sink(newId) : s1ImageSink(imageMode);
     body.state = contentToSystemOne(ir.input, sink, "The input");
     if (body.state === null) body.state = "";
     body.questions = {};
     for (const question of ir.questions) body.questions[question.name] = s1QuestionFromIR(question, sink, fill);
-    if (Object.keys(sink.assets).length > 0) body.assets = sink.assets;
-    images = Object.keys(sink.assets).length > 0;
-    if (sink.multipart) multipart = sink.files;
+    if (imageMode === "assets") {
+      if (Object.keys(sink.assets).length > 0) body.assets = sink.assets;
+      images = Object.keys(sink.assets).length > 0;
+      if (sink.multipart) multipart = sink.files;
+    } else if (sink.images.length) body.images = sink.images;
   }
   // A System One-shaped /v1/decisions client (Perplexity, Inception) talks to
   // a vendor of its own family: its extensions go through for that vendor to check.
@@ -579,7 +628,46 @@ function s1Encode(ir, upstreamDialect, model, newId, options) {
     }
   }
   if (ir.questions.some((question) => question.type === "box")) images = true;
-  return { body: body, multipartFiles: multipart, images: images };
+  if (upstreamDialect === "parallel") return parallelBody(body);
+  // Uploaded files go on as parts only with a body that went as written.
+  return { body: body, multipartFiles: multipart, images: images, forwardFiles: !!sameFamily };
+}
+
+// Parallel Decisions (POST https://api.parallel.ai/v1/decisions): System One's
+// state and questions without a model or images; instructions are text on
+// every question, choice has 2 to 255 options and score 2 to 10 levels, and
+// question names are letters, digits, - and _.
+function parallelText(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function parallelBody(body) {
+  const questions = {};
+  for (const name of Object.keys(body.questions)) {
+    const question = body.questions[name];
+    const where = 'Question "' + name + '"';
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) fail(where + ": Parallel question names hold only letters, digits, - and _", "invalid_request");
+    if (["noul", "choice", "score"].indexOf(question.type) < 0) fail(where + " has type " + question.type + "; Parallel supports noul, choice, and score", "unsupported_question_type");
+    const out = { type: question.type, instructions: question.instructions === undefined || question.instructions === null ? name : parallelText(question.instructions) };
+    if (question.type === "noul" && isObject(question.criteria)) {
+      const criteria = {};
+      for (const key of ["true", "false"]) if (question.criteria[key] !== undefined && question.criteria[key] !== null) criteria[key] = parallelText(question.criteria[key]);
+      if (Object.keys(criteria).length) out.criteria = criteria;
+    } else if (question.type === "choice") {
+      const keys = Object.keys(question.criteria);
+      if (keys.length < 2 || keys.length > 255) fail(where + " has " + keys.length + " options; Parallel accepts 2 to 255", "limit_exceeded");
+      out.criteria = {};
+      for (const key of keys) out.criteria[key] = question.criteria[key] === null || question.criteria[key] === undefined ? key : parallelText(question.criteria[key]);
+    } else if (question.type === "score") {
+      if (question.criteria.length < 2 || question.criteria.length > 10) fail(where + " has " + question.criteria.length + " levels; Parallel accepts 2 to 10", "limit_exceeded");
+      out.criteria = question.criteria.map(parallelText);
+    }
+    questions[name] = out;
+  }
+  if (body.assets !== undefined || body.images !== undefined) fail("Parallel decisions take no images", "unsupported_modality");
+  const out = {};
+  for (const key of Object.keys(body)) if (key !== "model") out[key] = key === "questions" ? questions : body[key];
+  return { body: out, multipartFiles: null, images: false };
 }
 
 // ---- upstream reply ---------------------------------------------------------
@@ -932,6 +1020,201 @@ const DB_ERROR_CODES = {
 function dbRenderError(status, message, code, upstream) {
   if (isObject(upstream) && typeof upstream.error_code === "string" && typeof upstream.message === "string") return upstream;
   return { error_code: DB_ERROR_CODES[status] || (status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST"), message: message };
+}
+
+// ---- src/extractions.js ----
+// Extractions: typed values pulled from a text or an image, a task of its own
+// beside decisions.
+//   Client and upstream: OpenRouter Extractions API (POST /api/alpha/extractions,
+//   alpha; https://openrouter.ai/docs/api/api-reference/alphaextractions/submit-an-extractions-request)
+//   Upstream: Cloudflare Workers AI Clairic (POST /ai/run/@cf/cloudflare/clairic;
+//   https://developers.cloudflare.com/workers-ai/models/clairic), the same
+//   fields with images in a top-level array and options instead of provider.
+// Answers keep the vendor's shape; both answer in the same one.
+//
+// Extraction IR: {kind: "extraction", source, model, state, fields, assets,
+//   referenceDate, provider, extras, passthrough, input, questions: []}
+
+
+const EX_FIELDS = ["model", "state", "fields", "assets", "reference_date", "provider", "user", "session_id", "trace"];
+const COMMON = ["type", "instructions", "unit", "null_threshold"];
+// Field keys per type, as the OpenRouter schema lists them.
+const EX_TYPES = {
+  text: COMMON,
+  date: COMMON,
+  time: COMMON,
+  datetime: COMMON,
+  number: COMMON.concat(["integer", "decimals"]),
+  duration: COMMON.concat(["integer", "decimals"]),
+  list: COMMON.concat(["items", "integer", "decimals"]),
+  estimate: ["type", "instructions", "unit", "min", "max", "step", "scale"],
+  forecast: ["type", "instructions", "unit", "min", "max", "step", "scale", "horizon", "interval"],
+};
+const REQUIRED = { list: ["items"], estimate: ["min", "max"], forecast: ["min", "max", "horizon", "interval"] };
+const ASSET_FORMATS = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", pdf: "application/pdf" };
+const INTERVALS = ["step", "minute", "hour", "day", "week", "month", "quarter", "year"];
+
+function validateField(name, field) {
+  const where = 'Field "' + name + '"';
+  if (!name.trim()) fail("Field names must contain text");
+  if (!isObject(field)) fail(where + " must be an object");
+  const keys = EX_TYPES[field.type];
+  if (!keys) fail(where + " must have type " + Object.keys(EX_TYPES).join(", "), "unsupported_field_type");
+  for (const key of Object.keys(field)) if (keys.indexOf(key) < 0) fail(where + " (" + field.type + ") does not accept " + key, "unknown_field");
+  for (const key of REQUIRED[field.type] || []) if (field[key] === undefined) fail(where + " needs " + key);
+  if (field.instructions !== undefined && typeof field.instructions !== "string") fail(where + " instructions must be text");
+  if (field.unit !== undefined && typeof field.unit !== "string") fail(where + " unit must be text");
+  if (field.integer !== undefined && typeof field.integer !== "boolean") fail(where + " integer must be true or false");
+  if (field.decimals !== undefined && !(Number.isInteger(field.decimals) && field.decimals >= 0 && field.decimals <= 6)) fail(where + " decimals must be an integer from 0 to 6");
+  if (field.null_threshold !== undefined && !(isFiniteNumber(field.null_threshold) && field.null_threshold > 0 && field.null_threshold <= 1)) fail(where + " null_threshold must be above 0 and at most 1");
+  if (field.items !== undefined && ["text", "number", "date"].indexOf(field.items) < 0) fail(where + " items must be text, number, or date");
+  for (const key of ["min", "max"]) if (field[key] !== undefined && !isFiniteNumber(field[key]) && typeof field[key] !== "string") fail(where + " " + key + " must be a number or a date");
+  if (field.step !== undefined && !(isFiniteNumber(field.step) && field.step > 0) && field.step !== "month" && field.step !== "year") fail(where + ' step must be a positive number, "month", or "year"');
+  if (field.scale !== undefined && field.scale !== "linear" && field.scale !== "log") fail(where + " scale must be linear or log");
+  if (field.horizon !== undefined && !(Number.isInteger(field.horizon) && field.horizon >= 1 && field.horizon <= 64)) fail(where + " horizon must be an integer from 1 to 64");
+  if (field.interval !== undefined && INTERVALS.indexOf(field.interval) < 0) fail(where + " interval must be one of " + INTERVALS.join(", "));
+}
+
+function exAssets(assets) {
+  if (assets === undefined) return {};
+  if (!isObject(assets) || Object.keys(assets).length === 0) fail("assets must be a nonempty object");
+  const result = {};
+  for (const key of Object.keys(assets)) {
+    const asset = assets[key];
+    const where = 'Asset "' + key + '"';
+    if (!key.trim()) fail("Asset references cannot be empty");
+    if (!isObject(asset)) fail(where + " must be an object");
+    for (const member of Object.keys(asset)) if (["type", "format", "data_base64"].indexOf(member) < 0) fail(where + " does not accept " + member, "unknown_field");
+    if (!hasOwn(ASSET_FORMATS, asset.format)) fail(where + " format must be png, jpg, jpeg, webp, or pdf");
+    if (asset.type !== undefined && asset.type !== "image" && asset.type !== "document") fail(where + " type must be image or document");
+    if (!isStrictBase64(asset.data_base64) || !asset.data_base64) fail(where + " data_base64 must be standard base64 without a data: prefix");
+    result[key] = { t: "media", kind: asset.format === "pdf" ? "document" : "image", mime: ASSET_FORMATS[asset.format], data: asset.data_base64 };
+  }
+  return result;
+}
+
+// The assets are read as files alone when the state is empty or is exactly
+// the one asset's key; otherwise every asset is referenced in the state or in
+// a field's instructions.
+function fileOnly(state, keys) {
+  return state === "" || (keys.length === 1 && state === keys[0]);
+}
+
+function exDecode(body) {
+  if (!isObject(body)) fail("Request body must be a JSON object");
+  if (body.questions !== undefined) fail("An extractions request has fields, not questions; send decisions to /api/alpha/decisions", "unknown_field");
+  for (const key of Object.keys(body)) if (EX_FIELDS.indexOf(key) < 0) fail("The Extractions API does not accept the request field " + key, "unknown_field");
+  if (typeof body.model !== "string" || !body.model.trim()) fail("model is required");
+  const state = body.state === undefined ? "" : body.state;
+  if (typeof state !== "string") fail("state must be text");
+  if (!isObject(body.fields) || Object.keys(body.fields).length === 0) fail("fields must be a nonempty object");
+  for (const name of Object.keys(body.fields)) validateField(name, body.fields[name]);
+  const assets = exAssets(body.assets);
+  const keys = Object.keys(assets);
+  if (state === "" && keys.length === 0) fail("state may be empty only when the request has assets");
+  if (keys.length && !fileOnly(state, keys)) {
+    const text = state + "\n" + Object.keys(body.fields).map((name) => body.fields[name].instructions || "").join("\n");
+    for (const key of keys) if (text.indexOf(key) < 0) fail('Asset "' + key + '" is not referenced in the state or in a field\'s instructions');
+  }
+  if (body.reference_date !== undefined && !(typeof body.reference_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.reference_date))) fail("reference_date must be YYYY-MM-DD");
+  if (body.provider !== undefined && body.provider !== null && !isObject(body.provider)) fail("provider must be an object");
+  for (const key of ["user", "session_id"]) if (body[key] !== undefined && !(typeof body[key] === "string" && body[key].length <= 256)) fail(key + " must be text of at most 256 characters");
+  const extras = { important: {}, ignorable: {} };
+  if (isObject(body.provider)) extras.important.provider = body.provider;
+  for (const key of ["user", "session_id", "trace"]) if (body[key] !== undefined) extras.ignorable[key] = body[key];
+  const input = [{ t: "text", text: state }].concat(keys.map((key) => assets[key]));
+  return {
+    kind: "extraction",
+    source: { family: "extraction", dialect: "openrouter" },
+    model: body.model,
+    state: state,
+    fields: body.fields,
+    assets: assets,
+    referenceDate: body.reference_date,
+    extras: extras,
+    passthrough: body,
+    input: input,
+    questions: [],
+  };
+}
+
+// ---- upstream encoders ------------------------------------------------------
+
+function exEncode(ir, dialect, model) {
+  if (dialect === "openrouter") {
+    const body = {};
+    for (const key of Object.keys(ir.passthrough)) body[key] = key === "model" ? model : ir.passthrough[key];
+    return { body: body };
+  }
+  // Cloudflare Workers AI Clairic.
+  const body = { model: model };
+  const keys = Object.keys(ir.assets);
+  body.state = keys.length && fileOnly(ir.state, keys) ? "" : ir.state;
+  for (const name of Object.keys(ir.fields)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) fail('Field "' + name + '": Clairic field names start with a letter or _ and hold up to 64 letters, digits, _ . -', "invalid_request");
+  }
+  body.fields = ir.fields;
+  if (keys.length) {
+    if (keys.length > 4) fail("Clairic reads at most 4 images per request", "limit_exceeded");
+    body.images = keys.map(function (key) {
+      const asset = ir.assets[key];
+      if (asset.kind !== "image") fail('Asset "' + key + '" is a PDF; Clairic reads PNG, JPEG, and WebP images only', "unsupported_modality");
+      return { content_type: asset.mime, base64: asset.data };
+    });
+  }
+  if (ir.referenceDate !== undefined) body.reference_date = ir.referenceDate;
+  const provider = ir.extras.important.provider;
+  if (provider) {
+    // Only the Cloudflare options of OpenRouter's provider object apply here.
+    for (const key of Object.keys(provider)) if (key !== "options") fail("The request field provider." + key + " has no equivalent on Clairic", "unsupported_field");
+    const options = isObject(provider.options) ? provider.options : {};
+    for (const slug of Object.keys(options)) if (slug !== "cloudflare") fail("provider.options." + slug + " has no equivalent on Clairic", "unsupported_field");
+    if (isObject(options.cloudflare)) {
+      for (const key of Object.keys(options.cloudflare)) if (key !== "include_quantiles" && key !== "return_state_text") fail("provider.options.cloudflare." + key + " has no equivalent on Clairic", "unsupported_field");
+      body.options = options.cloudflare;
+    }
+  }
+  return { body: body };
+}
+
+// ---- upstream reply ---------------------------------------------------------
+
+function exInteger(value) {
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function exParse(body, ir) {
+  if (!isObject(body) || !isObject(body.answers)) fail("The upstream reply has no answers object", "upstream_invalid", 502);
+  for (const name of Object.keys(ir.fields)) {
+    const answer = body.answers[name];
+    if (!isObject(answer) || typeof answer.type !== "string" || !hasOwn(answer, "value")) fail('The answer to field "' + name + '" is missing', "upstream_invalid", 502);
+  }
+  let usage = null;
+  if (isObject(body.usage) && exInteger(body.usage.input_tokens) !== undefined) {
+    const input = body.usage.input_tokens;
+    const output = exInteger(body.usage.output_tokens) || 0;
+    usage = { input: input, cacheRead: 0, cacheWrite: 0, output: output, reasoning: 0, total: input + output };
+    if (isFiniteNumber(body.usage.cost) && body.usage.cost >= 0) usage.cost = body.usage.cost;
+  }
+  return { model: typeof body.model === "string" ? body.model : "", answers: body.answers, usage: usage };
+}
+
+// ---- client renderer --------------------------------------------------------
+
+const USAGE_DETAILS = ["state_tokens", "image_tokens", "schema_tokens", "passes"];
+
+function exRender(ir, result, taskId) {
+  const reply = result.reply;
+  const out = { id: taskId, model: result.model || ir.model };
+  if (typeof reply.provider === "string") out.provider = reply.provider;
+  out.answers = result.answers;
+  out.truncated = reply.truncated === true;
+  if (hasOwn(reply, "state_text")) out.state_text = reply.state_text;
+  const usage = { input_tokens: result.usage ? result.usage.input : 0, output_tokens: result.usage ? result.usage.output : 0 };
+  // Token details pass through; the relay's cost stays in the gateway.
+  if (isObject(reply.usage)) for (const key of USAGE_DETAILS) if (exInteger(reply.usage[key]) !== undefined) usage[key] = reply.usage[key];
+  out.usage = usage;
+  return out;
 }
 
 // ---- src/openai.js ----
@@ -1957,6 +2240,14 @@ const UPSTREAMS = {
   vercel_sdk: { family: "vercel", dialect: "sdk", path: "/v4/ai/evaluation-model", auth: "bearer", maxQuestions: 0, contextTokens: 262400 },
   // Reports no token usage: billed per successful request (see billing.js).
   databricks: { family: "databricks", dialect: "databricks", path: "/api/2.0/ai-functions/ai-decide", auth: "bearer", maxQuestions: 0, contextTokens: 0, noUsage: true },
+  // Parallel's own API: System One without a model or images, x-api-key.
+  parallel: { family: "systemone", dialect: "parallel", path: "/v1/decisions", auth: "x-api-key", maxQuestions: 100, contextTokens: 32000 },
+  // Cloudflare Workers AI openai/decisions: OpenAI's body inside {model, input};
+  // Base URL https://api.cloudflare.com/client/v4/accounts/<account ID>.
+  cloudflare_openai: { family: "openai", dialect: "cloudflare", path: "/ai/run", auth: "bearer", maxQuestions: 200, contextTokens: 1050000 },
+  // Extractions (a task of their own): OpenRouter's API and Cloudflare Clairic.
+  extractions: { family: "extraction", dialect: "openrouter", path: "/api/alpha/extractions", auth: "bearer", maxQuestions: 0, contextTokens: 262144 },
+  clairic: { family: "extraction", dialect: "cloudflare", path: "/ai/run/@cf/cloudflare/clairic", auth: "bearer", maxQuestions: 0, contextTokens: 65536 },
 };
 
 const UPSTREAM_IDS = Object.keys(UPSTREAMS);
@@ -1970,7 +2261,12 @@ const GATEWAY_PATHS = {
   vercel: "/v1/evaluate",
   vercel_sdk: "/v1/evaluate",
   databricks: "/api/2.0/ai-functions/ai-decide",
+  extractions: "/api/alpha/extractions",
 };
+
+// Another New API serves each protocol through this plugin's client routes;
+// the ones without a client route of their own go as the protocol it serves.
+const GATEWAY_PROTOCOLS = { vercel_sdk: "vercel", parallel: "systemone", cloudflare_openai: "openai", clairic: "extractions" };
 
 // Client protocols: {decode, render, renderError}.
 const CLIENTS = {
@@ -1982,6 +2278,7 @@ const CLIENTS = {
   gemini: { family: "gemini", decode: (body) => gmDecode(body), render: (ir, result) => gmRender(ir, result), error: gmRenderError },
   vercel: { family: "vercel", decode: (body) => vcDecode(body), render: (ir, result) => vcRender(ir, result), error: vcRenderError },
   databricks: { family: "databricks", decode: (body) => dbDecode(body), render: (ir, result) => dbRender(ir, result), error: dbRenderError },
+  extractions: { family: "extraction", decode: (body) => exDecode(body), render: (ir, result, taskId) => exRender(ir, result, taskId), error: (s, m, c, u) => s1RenderError(s, m, c, u, "openrouter") },
 };
 
 // Client paths (without the /decision prefix) and the protocol each speaks.
@@ -2000,6 +2297,7 @@ const CLIENT_ROUTES = [
   { path: "/v1beta/decisions", protocol: "gemini" },
   { path: "/v1/evaluate", protocol: "vercel" },
   { path: "/api/2.0/ai-functions/ai-decide", protocol: "databricks" },
+  { path: "/api/alpha/extractions", protocol: "extractions" },
 ];
 
 function routeProtocol(path) {
@@ -2018,10 +2316,34 @@ function clientProtocol(path, body) {
   return "openai";
 }
 
+// Wraps OpenAI's body for Cloudflare Workers AI, whose openai/decisions takes
+// image parts as data URLs only.
+function cloudflareRun(encoded, model) {
+  const input = {};
+  for (const key of Object.keys(encoded.body)) if (key !== "model") input[key] = encoded.body[key];
+  const items = Array.isArray(input.input) ? input.input : [];
+  for (const item of items) {
+    for (const part of Array.isArray(item && item.content) ? item.content : []) {
+      if (part && part.type === "input_image" && typeof part.image_url === "string" && !/^data:image\//.test(part.image_url))
+        fail("Cloudflare's openai/decisions takes images as data URLs, not image URLs", "unsupported_modality");
+    }
+  }
+  return { body: { model: model, input: input } };
+}
+
 function encodeUpstream(id, ir, model, newId, options) {
   const upstream = UPSTREAMS[id];
+  const extraction = ir.kind === "extraction";
+  if (extraction !== (upstream.family === "extraction"))
+    fail(
+      extraction
+        ? "This is an extractions request, and the channel's upstream protocol " + id + " serves decisions; set the protocol (or modelProtocols for this model) to extractions or clairic"
+        : "This is a decisions request, and the channel's upstream protocol " + id + " serves extractions; set the protocol (or modelProtocols for this model) to a decisions protocol",
+      "invalid_config",
+    );
+  if (extraction) return exEncode(ir, upstream.dialect, model);
   if (upstream.family === "systemone") return s1Encode(ir, upstream.dialect, model, newId, options || {});
-  if (upstream.family === "openai") return oaEncode(ir, model);
+  if (upstream.family === "openai") return upstream.dialect === "cloudflare" ? cloudflareRun(oaEncode(ir, model), model) : oaEncode(ir, model);
   if (upstream.family === "gemini") return gmEncode(ir, model);
   if (upstream.family === "vercel") return vcEncode(ir, model, upstream.dialect === "sdk");
   if (upstream.family === "databricks") return dbEncode(ir, model, !!(options && options.keepModel));
@@ -2036,11 +2358,14 @@ function unwrapReply(body) {
 
 function parseUpstream(id, body, ir) {
   const upstream = UPSTREAMS[id];
+  if (isObject(body) && body.success === false && Array.isArray(body.errors))
+    fail("The upstream returned an error: " + body.errors.map((item) => (isObject(item) && typeof item.message === "string" ? item.message : JSON.stringify(item))).join("; "), "upstream_error", 502);
   const reply = unwrapReply(body);
   if (isObject(reply) && isObject(reply.error) && reply.answers === undefined)
     fail("The upstream returned an error: " + (typeof reply.error.message === "string" ? reply.error.message : JSON.stringify(reply.error)), "upstream_error", 502);
   let result;
-  if (upstream.family === "systemone") result = s1Parse(reply, ir);
+  if (upstream.family === "extraction") result = exParse(reply, ir);
+  else if (upstream.family === "systemone") result = s1Parse(reply, ir);
   else if (upstream.family === "openai") result = oaParse(reply, ir);
   else if (upstream.family === "gemini") result = gmParse(reply, ir);
   else if (upstream.family === "databricks") result = dbParse(reply, ir);
@@ -2090,6 +2415,10 @@ const PROTOCOL_TITLES = [
   { en: "Vercel evaluation", zh: "Vercel Evaluation" },
   { en: "Vercel AI SDK transport", zh: "Vercel AI SDK 内部接口" },
   { en: "Databricks ai-decide (no token usage, billed per request)", zh: "Databricks ai-decide（无 token 用量，按次计费）" },
+  { en: "Parallel decisions (no model field, x-api-key)", zh: "Parallel Decisions（无模型字段，x-api-key）" },
+  { en: "Cloudflare Workers AI openai/decisions", zh: "Cloudflare Workers AI openai/decisions" },
+  { en: "Extractions (OpenRouter format)", zh: "Extractions 抽取（OpenRouter 格式）" },
+  { en: "Cloudflare Workers AI Clairic extraction", zh: "Cloudflare Workers AI Clairic 抽取" },
 ];
 
 const AUTH_TYPES = ["auto", "bearer", "x-goog-api-key", "api-key", "x-api-key", "custom", "none"];
@@ -2154,6 +2483,20 @@ const CHANNEL_CONFIG = {
       title: { en: "Ask questions without instructions by their name", zh: "缺少指令时用问题名补上" },
       description: { en: "For upstreams that require instructions on every question", zh: "用于要求每题都有指令的上游" },
       default: false,
+    },
+    imageMode: {
+      type: "string",
+      title: { en: "How images reach a System One upstream", zh: "System One 上游的图片写法" },
+      description: { en: "Vendors that are System One-compatible but take images their own way", zh: "兼容 System One、但图片写法不同的厂商" },
+      enum: IMAGE_MODES,
+      enumTitles: [
+        { en: "assets (TypeSafe)", zh: "assets（TypeSafe）" },
+        { en: "images: base64 strings (Ollama)", zh: "images：Base64 字符串（Ollama）" },
+        { en: "images: {mediaType, base64} (SubQ)", zh: "images：{mediaType, base64}（SubQ）" },
+        { en: "images: {content_type, base64} (Cloudflare Clef)", zh: "images：{content_type, base64}（Cloudflare Clef）" },
+        { en: "image_url parts in state (Perplexity, Requesty, Inception)", zh: "state 里的 image_url（Perplexity、Requesty、Inception）" },
+      ],
+      default: "assets",
     },
     perCallPrice: {
       type: "boolean",
@@ -2227,8 +2570,8 @@ function resolveChannel(ctx) {
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
   if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
   const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
-  // Another New API serves the AI SDK body at /v1/evaluate, which names the model.
-  if (gateway && protocol === "vercel_sdk") protocol = "vercel";
+  // Another New API serves each protocol on this plugin's client routes.
+  if (gateway && GATEWAY_PROTOCOLS[protocol]) protocol = GATEWAY_PROTOCOLS[protocol];
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -2267,6 +2610,7 @@ function resolveChannel(ctx) {
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
     perCallPrice: config.perCallPrice === true,
+    imageMode: IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };
@@ -2357,6 +2701,8 @@ const MODEL_GROUPS = [
   { vendor: "OpenRouter-only", models: ["heygen/heygen-decision-1", "heygen/heygen-decision-1-turbo", "jaredpalmer/kev-4b", "parallel/decisions-fast:free"] },
   // Vercel AI Gateway
   { vendor: "Parallel", models: ["parallel/parallel-decisions-fast"] },
+  // Extractions: OpenRouter's /api/alpha/extractions model list and Workers AI
+  { vendor: "Extraction models", models: ["cloudflare/clairic", "clairic", "scaledown/extract", "inference-net/schematron-v2-small", "inference-net/schematron-v2-turbo", "inception/mercury-decide", "levanto/sage-2"] },
 ];
 
 const MODELS = MODEL_GROUPS.reduce((all, group) => all.concat(group.models), []).concat([CUSTOM_SLOT]);
@@ -2501,6 +2847,8 @@ function contentBytes(content, files) {
 
 function estimateInputTokens(ir, files) {
   let total = TEMPLATE_TOKENS + contentBytes(ir.input, files);
+  // Extraction field definitions are read as part of the input.
+  if (ir.fields) total += utf8Length(JSON.stringify(ir.fields)) + QUESTION_TOKENS * Object.keys(ir.fields).length;
   for (const question of ir.questions) {
     total += QUESTION_TOKENS + utf8Length(question.name);
     total += contentBytes(question.instructions, files) + contentBytes(question.trueText, files) + contentBytes(question.falseText, files);
@@ -2518,7 +2866,8 @@ function reservationFacts(ir, files, route, longContext, upstreamModel, model) {
   if (route.upstream.noUsage) return requestFacts();
   const cap = route.reserveTokens || (longContext && route.upstream.longContextTokens) || route.upstream.contextTokens;
   const tokens = Math.min(estimateInputTokens(ir, files), cap);
-  return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * ir.questions.length }, upstreamModel, model);
+  const answers = ir.questions.length || Object.keys(ir.fields || {}).length;
+  return usageFacts({ input: tokens, cacheRead: 0, cacheWrite: 0, output: OUTPUT_TOKENS_PER_QUESTION * answers }, upstreamModel, model);
 }
 
 function usageFromTaskData(data) {
@@ -2534,7 +2883,7 @@ function usageFromTaskData(data) {
 // Response: upstream reply -> upstream parser -> answers/usage IR -> client renderer
 
 
-const VERSION = "1.0.3";
+const VERSION = "1.1.0";
 
 const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context";
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
@@ -2548,6 +2897,7 @@ const DECODERS = {
   gemini: "decodeGemini",
   vercel: "decodeEvaluate",
   databricks: "decodeDatabricks",
+  extractions: "decodeExtractions",
 };
 
 export const meta = {
@@ -2656,7 +3006,7 @@ function submitRequest(ctx) {
   const prepared = prepare(ctx);
   const ir = prepared.ir;
   const route = prepared.route;
-  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel });
+  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel, imageMode: route.imageMode });
   const headers = { Accept: "application/json" };
   for (const name of Object.keys(route.headers)) headers[name] = route.headers[name];
   if (route.upstream.family === "systemone") {
@@ -2672,7 +3022,7 @@ function submitRequest(ctx) {
   const request = { url: route.url, method: "POST", headers: headers };
   // System One with uploaded images: the JSON goes first in a part named
   // request, then each file, as the TypeSafe SDKs send it.
-  const passthroughFiles = route.upstream.family === "systemone" && ir.source.family === "systemone" && ir.passthrough ? ctx.files || [] : [];
+  const passthroughFiles = encoded.forwardFiles ? ctx.files || [] : [];
   const parts = encoded.multipartFiles || (passthroughFiles.length ? passthroughFiles.map((file) => ({ name: file.field, fileRef: file.ref, filename: file.filename })) : null);
   if (parts) {
     request.bodyType = "multipart";
@@ -2770,6 +3120,8 @@ function readableMessage(upstream, fallback) {
   if (typeof upstream.detail === "string") return upstream.detail;
   if (isObject(upstream.detail) && typeof upstream.detail.message === "string") return upstream.detail.message;
   if (isObject(upstream.error) && typeof upstream.error.message === "string") return upstream.error.message;
+  // Cloudflare's API envelope.
+  if (Array.isArray(upstream.errors) && isObject(upstream.errors[0]) && typeof upstream.errors[0].message === "string") return upstream.errors[0].message;
   if (typeof upstream.message === "string") return upstream.message;
   return fallback;
 }
@@ -2783,6 +3135,7 @@ export const native = {
   decodeGemini: decodeAs("gemini"),
   decodeEvaluate: decodeAs("vercel"),
   decodeDatabricks: decodeAs("databricks"),
+  decodeExtractions: decodeAs("extractions"),
   renderDecision: function (ctx, task) {
     if (!isObject(task.data) || task.data.response === undefined) throw new Error("The decision result is unavailable");
     return task.data.response;

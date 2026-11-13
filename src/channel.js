@@ -2,7 +2,8 @@
 // Precedence: per-model value > channel value > protocol default.
 // The plugin never guesses a protocol from the Base URL or host.
 
-import { UPSTREAM_IDS, UPSTREAMS, GATEWAY_PATHS } from "./protocols.js";
+import { GATEWAY_PATHS, GATEWAY_PROTOCOLS, UPSTREAM_IDS, UPSTREAMS } from "./protocols.js";
+import { IMAGE_MODES } from "./systemone.js";
 import { fail, isObject } from "./util.js";
 
 // Declared routing slot: map any client model name to it in the channel's
@@ -17,6 +18,10 @@ const PROTOCOL_TITLES = [
   { en: "Vercel evaluation", zh: "Vercel Evaluation" },
   { en: "Vercel AI SDK transport", zh: "Vercel AI SDK 内部接口" },
   { en: "Databricks ai-decide (no token usage, billed per request)", zh: "Databricks ai-decide（无 token 用量，按次计费）" },
+  { en: "Parallel decisions (no model field, x-api-key)", zh: "Parallel Decisions（无模型字段，x-api-key）" },
+  { en: "Cloudflare Workers AI openai/decisions", zh: "Cloudflare Workers AI openai/decisions" },
+  { en: "Extractions (OpenRouter format)", zh: "Extractions 抽取（OpenRouter 格式）" },
+  { en: "Cloudflare Workers AI Clairic extraction", zh: "Cloudflare Workers AI Clairic 抽取" },
 ];
 
 export const AUTH_TYPES = ["auto", "bearer", "x-goog-api-key", "api-key", "x-api-key", "custom", "none"];
@@ -81,6 +86,20 @@ export const CHANNEL_CONFIG = {
       title: { en: "Ask questions without instructions by their name", zh: "缺少指令时用问题名补上" },
       description: { en: "For upstreams that require instructions on every question", zh: "用于要求每题都有指令的上游" },
       default: false,
+    },
+    imageMode: {
+      type: "string",
+      title: { en: "How images reach a System One upstream", zh: "System One 上游的图片写法" },
+      description: { en: "Vendors that are System One-compatible but take images their own way", zh: "兼容 System One、但图片写法不同的厂商" },
+      enum: IMAGE_MODES,
+      enumTitles: [
+        { en: "assets (TypeSafe)", zh: "assets（TypeSafe）" },
+        { en: "images: base64 strings (Ollama)", zh: "images：Base64 字符串（Ollama）" },
+        { en: "images: {mediaType, base64} (SubQ)", zh: "images：{mediaType, base64}（SubQ）" },
+        { en: "images: {content_type, base64} (Cloudflare Clef)", zh: "images：{content_type, base64}（Cloudflare Clef）" },
+        { en: "image_url parts in state (Perplexity, Requesty, Inception)", zh: "state 里的 image_url（Perplexity、Requesty、Inception）" },
+      ],
+      default: "assets",
     },
     perCallPrice: {
       type: "boolean",
@@ -154,8 +173,8 @@ export function resolveChannel(ctx) {
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
   if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
   const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
-  // Another New API serves the AI SDK body at /v1/evaluate, which names the model.
-  if (gateway && protocol === "vercel_sdk") protocol = "vercel";
+  // Another New API serves each protocol on this plugin's client routes.
+  if (gateway && GATEWAY_PROTOCOLS[protocol]) protocol = GATEWAY_PROTOCOLS[protocol];
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -194,6 +213,7 @@ export function resolveChannel(ctx) {
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
     perCallPrice: config.perCallPrice === true,
+    imageMode: IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };

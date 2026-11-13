@@ -426,6 +426,67 @@ def main():
     want = math.floor(total * 1.0 / 1e6 * 1.2 * QUOTA_PER_USD + 0.5)
     check("cost-plus: falls back to the token price without a cost", status == 200 and log and log["model_name"] == "d1.1" and abs(log["quota"] - want) <= 1, (status, want, log and log["quota"]))
 
+    # 13. 1.1.0 protocols: extractions (OpenRouter and Clairic), Parallel,
+    # Cloudflare openai/decisions, SubQ images from an upload, vendor types.
+    def plugin_channel(name, models, config, mapping=None):
+        channel = {"name": name, "type": 61, "key": "upstream-key-" + name, "base_url": MOCK, "status": 1, "priority": 10, "models": models,
+                   "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": config})}
+        if mapping:
+            channel["model_mapping"] = json.dumps(mapping)
+        return admin.channel(channel)
+
+    plugin_channel("e2e-extract", "cloudflare/clairic", {"protocol": "extractions"})
+    plugin_channel("e2e-clairic", "clairic", {"protocol": "clairic"})
+    plugin_channel("e2e-parallel", "parallel/parallel-decisions-fast", {"protocol": "parallel"})
+    plugin_channel("e2e-cfopenai", "openai/gpt-6-luna-decisions", {"protocol": "cloudflare_openai", "upstreamModels": {"openai/gpt-6-luna-decisions": "openai/decisions"}})
+    plugin_channel("e2e-subq", "subq-snap-1.2", {"protocol": "systemone", "imageMode": "images-subq"})
+    plugin_channel("e2e-respan", "span-02", {"protocol": "systemone"})
+    for model in ["cloudflare/clairic", "clairic", "subq-snap-1.2", "span-02"]:
+        exprs[model] = jev
+    exprs["parallel/parallel-decisions-fast"] = 'u("requests") * 0.001'
+    exprs["openai/gpt-6-luna-decisions"] = luna
+    set_task_prices(admin, exprs)
+    time.sleep(3)
+
+    invoice = {"model": "cloudflare/clairic", "state": "Invoice INV-7, due 1 Dec 2026. Total 41.50 USD.", "reference_date": "2026-11-13",
+               "fields": {"invoice_number": {"type": "text"}, "due_date": {"type": "date"}, "total": {"type": "number", "decimals": 2, "unit": "USD"}}}
+    status, reply = call(token, "/api/alpha/extractions", invoice)
+    sent = received()[-1]
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("extractions -> OpenRouter: answers, no cost shown, billed", status == 200 and reply.get("answers", {}).get("total", {}).get("value") == 41.5 and "cost" not in reply.get("usage", {})
+          and sent["path"] == "/api/alpha/extractions" and log and log["model_name"] == "cloudflare/clairic" and "upstream_cost" in (log.get("content") or ""), (status, reply, log and log.get("content")))
+    status, reply = call(token, "/decision/api/alpha/extractions", dict(invoice, model="clairic"))
+    sent = received()[-1]
+    check("extractions -> Clairic: run path, envelope unwrapped", status == 200 and sent["path"].endswith("/ai/run/@cf/cloudflare/clairic") and reply.get("answers", {}).get("invoice_number", {}).get("value") == "INV-7", (status, reply, sent.get("path")))
+    status, reply = call(token, "/api/alpha/extractions", dict(invoice, questions={}))
+    check("extractions: a questions key is refused in OpenRouter's format", status == 400 and "error" in reply and "decisions" in reply["error"].get("message", ""), (status, reply))
+
+    status, reply = call(token, "/v1/systemone", body_for("systemone", "parallel/parallel-decisions-fast"))
+    sent = received()[-1]
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("Parallel: no model, x-api-key, billed per request", status == 200 and shape_ok("systemone", reply) and "model" not in sent["body"] and sent["headers"].get("x-api-key") == "upstream-key-e2e-parallel"
+          and log and log["quota"] == round(0.001 * QUOTA_PER_USD), (status, reply, log and log["quota"]))
+
+    status, reply = call(token, "/v1/decisions", body_for("openai", "openai/gpt-6-luna-decisions"))
+    sent = received()[-1]
+    check("Cloudflare openai/decisions: wrapped request, unwrapped reply", status == 200 and shape_ok("openai", reply) and sent["path"] == "/ai/run" and sent["body"].get("model") == "openai/decisions" and "input" in sent["body"], (status, reply, sent.get("body", {}).get("model")))
+
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==")
+    boundary = "----decision" + uuid.uuid4().hex
+    request = {"model": "subq-snap-1.2", "state": "Look at img-1", "questions": {"cat": {"type": "noul", "instructions": "Is there a cat?"}}, "assets": {"img-1": {"type": "image", "part": "photo"}}}
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n{json.dumps(request)}\r\n'.encode(),
+             f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="cat.png"\r\nContent-Type: image/png\r\n\r\n'.encode() + png + b"\r\n",
+             f"--{boundary}--\r\n".encode()]
+    status, reply = call(token, "/v1/systemone", None, data=b"".join(parts), content_type="multipart/form-data; boundary=" + boundary)
+    sent = received()[-1]
+    images = (sent.get("body") or {}).get("images") or []
+    check("SubQ images from an upload: {mediaType, base64} filled in by New API", status == 200 and not sent.get("parts") and images == [{"mediaType": "image/png", "base64": base64.b64encode(png).decode()}] and "assets" not in sent["body"], (status, reply, images, sent.get("parts")))
+
+    status, reply = call(token, "/v1/systemone", {"model": "span-02", "state": "Order total: $25.50", "questions": {"total": {"type": "number", "instructions": "What is the order total in dollars?"}}})
+    check("Respan number question passes through", status == 200 and reply.get("answers", {}).get("total", {}).get("number") == 25.5, (status, reply))
+
     print(f"\n{len(FAILED)} failed")
     for name in FAILED:
         print("  -", name)

@@ -44,13 +44,20 @@ function special(model) {
 // ---- System One (TypeSafe; strict top-level members) ----------------------
 function systemOne(headers, body, dialect) {
   if (!isObj(body)) reject(422, { detail: [{ loc: ["body"], msg: "not an object", type: "type_error" }] });
-  const allowed = dialect === "openrouter" ? ["model", "state", "questions", "assets", "provider", "session_id", "trace", "user"] : ["model", "state", "questions", "assets"];
+  const allowed = dialect === "openrouter" ? ["model", "state", "questions", "assets", "provider", "session_id", "trace", "user"] : ["model", "state", "questions", "assets", "images"];
   for (const key of Object.keys(body)) if (!allowed.includes(key)) reject(422, { detail: [{ loc: ["body", key], msg: "Extra inputs are not permitted", type: "extra_forbidden" }] });
   if (typeof body.model !== "string") reject(422, { detail: [{ loc: ["body", "model"], msg: "Field required", type: "missing" }] });
   const sp = special(body.model);
   if (sp) reject(sp.status, dialect === "openrouter" ? { error: { code: sp.status, message: "mock " + sp.status } } : { detail: "mock " + sp.status });
   if (body.state === undefined || body.state === null) reject(422, { detail: [{ loc: ["body", "state"], msg: "Field required", type: "missing" }] });
   if (!isObj(body.questions) || !Object.keys(body.questions).length) reject(422, { detail: [{ loc: ["body", "questions"], msg: "bad", type: "value_error" }] });
+  if (body.images !== undefined) {
+    if (!Array.isArray(body.images) || body.images.length > 4) reject(422, { detail: "images: at most 4" });
+    for (const image of body.images) {
+      const ok = typeof image === "string" || (isObj(image) && typeof image.base64 === "string" && (typeof image.mediaType === "string" || typeof image.content_type === "string"));
+      if (!ok) reject(422, { detail: "bad image" });
+    }
+  }
   const images = body.assets !== undefined || Object.values(body.questions).some((q) => q.type === "box");
   if (images && header(headers, "TypeSafe-Danger-Zone-Images") !== "true") reject(400, { detail: "Images require the TypeSafe-Danger-Zone-Images header" });
   if (body.assets !== undefined) {
@@ -79,6 +86,7 @@ function systemOne(headers, body, dialect) {
       };
     } else if (q.type === "box") answers[name] = { type: "box", box: { top: 0.1, bottom: 0.9, left: 0.2, right: 0.8 }, confidence: null };
     else if (q.type === "locate") answers[name] = { type: "locate", spans: [] };
+    else if (q.type === "number") answers[name] = { type: "number", number: 25.5, text: "25.5", confidence: 0.99 };
     else reject(422, { detail: "unknown type " + q.type });
   }
   const input = tokens(body);
@@ -260,6 +268,66 @@ function databricks(path, headers, body, gateway) {
   return { response: { answers }, metadata: { version: "1.0" } };
 }
 
+// ---- Parallel Decisions (no model, x-api-key) --------------------------------
+function parallel(headers, body) {
+  const err = (message) => reject(422, { type: "error", error: { ref_id: "ref_1", message, detail: null } });
+  if (!header(headers, "x-api-key")) reject(401, { type: "error", error: { ref_id: "ref_0", message: "missing key", detail: null } });
+  if (!isObj(body)) err("body");
+  for (const key of Object.keys(body)) if (!["state", "questions", "mode", "advanced_settings"].includes(key)) err("Unknown field " + key);
+  if (!isObj(body.questions) || !Object.keys(body.questions).length || Object.keys(body.questions).length > 100) err("questions 1-100");
+  const answers = {};
+  for (const [name, q] of Object.entries(body.questions)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) err("bad name " + name);
+    if (typeof q.instructions !== "string") err("instructions must be a string");
+    if (q.type === "noul") answers[name] = { type: "noul", noul: 0.8 };
+    else if (q.type === "choice") {
+      const keys = Object.keys(q.criteria || {});
+      if (keys.length < 2 || keys.length > 255) err("choice 2-255");
+      const p = spread(keys.length);
+      answers[name] = { type: "choice", choice: keys[0], probabilities: Object.fromEntries(keys.map((k, i) => [k, p[i]])), confidence: 0.55 };
+    } else if (q.type === "score") {
+      if (!Array.isArray(q.criteria) || q.criteria.length < 2 || q.criteria.length > 10 || q.criteria.some((c) => typeof c !== "string")) err("score 2-10 strings");
+      const p = spread(q.criteria.length);
+      answers[name] = { type: "score", score: p.reduce((s, v, i) => s + v * i, 0), legend: Object.fromEntries(q.criteria.map((c, i) => [String(i), c])), probabilities: Object.fromEntries(p.map((v, i) => [String(i), v])), confidence: 0.5 };
+    } else err("unknown type " + q.type);
+  }
+  return { mode: "fast", answers, usage: { input_tokens: tokens(body), output_tokens: 0 }, citations: [{ url: "https://example.com", title: "Example", excerpts: [] }], decision_id: "decisions_0123456789abcdef0123456789abcdef" };
+}
+
+// ---- Extractions (OpenRouter shape; Clairic answers the same way) ----------
+const EXTRACTION_ANSWERS = {
+  text: { type: "text", value: "INV-7", guess: "INV-7", span: [0, 5], p_null: 0.01, confidence: 0.98 },
+  number: { type: "number", value: 41.5, guess: 41.5, p_null: 0.02, confidence: 0.9 },
+  date: { type: "date", value: "2026-12-01", guess: "2026-12-01", p_null: 0.05 },
+  time: { type: "time", value: "09:30", guess: "09:30", p_null: 0.1 },
+  datetime: { type: "datetime", value: "2026-12-01T09:30", guess: "2026-12-01T09:30", p_null: 0.1 },
+  duration: { type: "duration", value: 30, guess: 30, unit: "days", p_null: 0.1 },
+  list: { type: "list", value: ["a@example.com"], guess: ["a@example.com"], spans: [[10, 23]], confidences: [0.9], p_null: 0.1 },
+  estimate: { type: "estimate", value: 30, guess: 30, mean: 31, median: 30, p10: 14, p90: 60, p_below: 0, p_above: 0 },
+  forecast: { type: "forecast", value: [1, 2], guess: [1, 2], mean: [1, 2], median: [1, 2], p10: [0, 1], p90: [2, 3], steps: [{ value: 1 }, { value: 2 }] },
+};
+
+function extraction(body, cloudflare) {
+  const err = (message) => (cloudflare ? reject(400, { success: false, errors: [{ code: 5006, message }], messages: [], result: null }) : reject(400, { error: { code: 400, message } }));
+  if (!isObj(body)) err("body");
+  const allowed = cloudflare ? ["model", "state", "fields", "images", "reference_date", "options"] : ["model", "state", "fields", "assets", "reference_date", "provider", "user", "session_id", "trace"];
+  for (const key of Object.keys(body)) if (!allowed.includes(key)) err("Unknown field " + key);
+  const sp = special(body.model);
+  if (sp) reject(sp.status, cloudflare ? { success: false, errors: [{ code: 10000, message: "mock " + sp.status }], messages: [], result: null } : { error: { code: sp.status, message: "mock " + sp.status } });
+  if (cloudflare && body.model !== "clairic") err("model must be clairic");
+  if (!isObj(body.fields) || !Object.keys(body.fields).length) err("fields");
+  if (cloudflare && body.images !== undefined && (!Array.isArray(body.images) || body.images.length > 4 || body.images.some((i) => !isObj(i) || !i.content_type || !i.base64))) err("images");
+  if (!body.state && !(cloudflare ? body.images : body.assets)) err("state");
+  const answers = {};
+  for (const [name, field] of Object.entries(body.fields)) {
+    if (!EXTRACTION_ANSWERS[field.type]) err("bad type " + field.type);
+    answers[name] = EXTRACTION_ANSWERS[field.type];
+  }
+  const usage = { input_tokens: tokens(body), output_tokens: 0, state_tokens: 3, image_tokens: 0, schema_tokens: 5, passes: 1 };
+  if (cloudflare) return { result: { model: "clairic", answers, truncated: false, usage }, success: true, errors: [], messages: [] };
+  return { id: "gen-ex-1", model: body.model, provider: "Cloudflare", answers, truncated: false, usage: Object.assign({ cost: 0.00002 }, usage) };
+}
+
 export function handle(path, headers, body) {
   const record = { path, headers, body };
   received.push(record);
@@ -281,6 +349,13 @@ export function handle(path, headers, body) {
     else if (clean.endsWith("/v4/ai/evaluation-model")) reply = vercel(headers, body, true);
     else if (clean.endsWith("/v1/evaluate")) reply = vercel(headers, body, false);
     else if (clean.endsWith("/ai-functions/ai-decide")) reply = databricks(path, headers, body, clean.startsWith("/decision/"));
+    else if (clean.endsWith("/api/alpha/extractions")) reply = extraction(body, false);
+    else if (clean.endsWith("/ai/run/@cf/cloudflare/clairic")) reply = extraction(body, true);
+    else if (clean.endsWith("/ai/run")) {
+      if (!isObj(body) || body.model !== "openai/decisions" || !isObj(body.input) || Object.keys(body).some((k) => k !== "model" && k !== "input"))
+        reject(400, { success: false, errors: [{ code: 5006, message: "expected {model: openai/decisions, input}" }], messages: [], result: null });
+      reply = { result: openAI(headers, Object.assign({ model: "gpt-6-luna" }, body.input)), success: true, errors: [], messages: [] };
+    } else if (clean.endsWith("/v1/decisions") && header(headers, "x-api-key") && isObj(body) && body.model === undefined) reply = parallel(headers, body);
     else if (clean.endsWith("/decisions")) reply = openAI(headers, body);
     else if (clean.includes("/cloudflare/")) reply = { result: systemOne(headers, body, "typesafe"), success: true, errors: [], messages: [] };
     else reply = { echo: body };

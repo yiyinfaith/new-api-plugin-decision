@@ -21,6 +21,7 @@ const S1_BASE_FIELDS = ["model", "state", "questions", "assets"];
 // ignorable ones only label the request and are dropped elsewhere.
 const S1_DIALECT_FIELDS = {
   typesafe: { important: [], ignorable: [] },
+  parallel: { important: [], ignorable: [] },
   openrouter: { important: ["provider"], ignorable: ["session_id", "trace", "user"] },
   scaledown: { important: [], ignorable: [] },
   compat: { important: ["mode", "max_staleness"], ignorable: ["user", "metadata"] },
@@ -149,7 +150,10 @@ export function s1Decode(body, dialect, files) {
   if (typeof body.model !== "string" || !body.model.trim()) fail("model is required");
   if (body.state === null || body.state === undefined || !s1IsEntry(body.state)) fail("state must be text, an object, or an array");
   if (!isObject(body.questions) || Object.keys(body.questions).length === 0) fail("questions must be a nonempty object");
-  const allowOtherTypes = dialect === "compat";
+  // Vendor question types (Perplexity locate, Inception extract, Respan
+  // number) reach System One-family upstreams as written; other protocols
+  // refuse them when converting.
+  const allowOtherTypes = true;
   for (const id of Object.keys(body.questions)) s1ValidateQuestion(id, body.questions[id], allowOtherTypes);
   const assets = s1Assets(body.assets, files);
   s1ReferencedAssets(body, assets);
@@ -180,6 +184,42 @@ export function s1Decode(body, dialect, files) {
 }
 
 // ---- upstream encoder -------------------------------------------------------
+
+// How a System One-compatible upstream takes images (channel imageMode):
+//   assets             TypeSafe: assets referenced from the text (default)
+//   images-base64      Ollama: top-level images, base64 strings
+//   images-subq        SubQ: top-level images, {mediaType, base64}
+//   images-cloudflare  Cloudflare Clef: top-level images, {content_type, base64}
+//   state-image-url    Perplexity, Requesty, Inception: {type: "image_url",
+//                      image_url: {url: data URL}} parts inside the state
+export const IMAGE_MODES = ["assets", "images-base64", "images-subq", "images-cloudflare", "state-image-url"];
+const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+function imageData(segment, encoding) {
+  if (segment.fileRef) return encoding === "dataUrl" ? { __fileRef: segment.fileRef, encoding: "dataUrl", mimeType: segment.mime } : { __fileRef: segment.fileRef, encoding: "base64" };
+  return encoding === "dataUrl" ? "data:" + segment.mime + ";base64," + segment.data : segment.data;
+}
+
+// A sink for the other image modes: images come only from the shared input,
+// as base64 or data URLs, never as remote URLs.
+function s1ImageSink(mode) {
+  const sink = {
+    images: [],
+    add: function (segment, where) {
+      if (segment.kind !== "image") fail(where + " contains " + segment.kind + " content; this upstream accepts images only", "unsupported_modality");
+      if (where !== "The input") fail(where + " has an image; this upstream takes images in the shared input only", "unsupported_content");
+      if (segment.url) fail(where + " has an image URL; this upstream takes images as base64, not URLs", "unsupported_modality");
+      if (IMAGE_MIMES.indexOf(segment.mime) < 0 || (mode === "images-base64" && segment.mime === "image/webp"))
+        fail(where + " has a " + (segment.mime || "unknown") + " image; this upstream accepts PNG and JPEG" + (mode === "images-base64" ? "" : " and WebP"), "unsupported_modality");
+      if (mode === "state-image-url") return { type: "image_url", image_url: { url: imageData(segment, "dataUrl") } };
+      if (mode === "images-base64") sink.images.push(imageData(segment, "base64"));
+      else if (mode === "images-subq") sink.images.push({ mediaType: segment.mime, base64: imageData(segment, "base64") });
+      else sink.images.push({ content_type: segment.mime, base64: imageData(segment, "base64") });
+      return undefined;
+    },
+  };
+  return sink;
+}
 
 function s1Sink(newId) {
   const sink = {
@@ -270,9 +310,11 @@ function s1FillInstructions(questions) {
 // Returns {body, multipartFiles, images}.
 export function s1Encode(ir, upstreamDialect, model, newId, options) {
   const fill = !!(options && options.fillInstructions);
+  const imageMode = (options && options.imageMode) || "assets";
   const allowed = S1_DIALECT_FIELDS[upstreamDialect] || S1_DIALECT_FIELDS.typesafe;
-  // A Databricks body is System One's state and questions, so it goes as written too.
-  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough;
+  // A Databricks body is System One's state and questions, so it goes as
+  // written too; System One assets only to an upstream that reads assets.
+  const sameFamily = (ir.source.family === "systemone" || ir.source.family === "databricks") && ir.passthrough && !(ir.hasAssets && imageMode !== "assets");
   const body = { model: model };
   let multipart = null;
   let images = false;
@@ -285,14 +327,16 @@ export function s1Encode(ir, upstreamDialect, model, newId, options) {
   } else {
     if (ir.onlyHere && ir.onlyHere.length) fail("The request has " + ir.onlyHere[0] + ", which System One cannot express", "unsupported_content");
     requireUniqueNames(ir.questions);
-    const sink = s1Sink(newId);
+    const sink = imageMode === "assets" ? s1Sink(newId) : s1ImageSink(imageMode);
     body.state = contentToSystemOne(ir.input, sink, "The input");
     if (body.state === null) body.state = "";
     body.questions = {};
     for (const question of ir.questions) body.questions[question.name] = s1QuestionFromIR(question, sink, fill);
-    if (Object.keys(sink.assets).length > 0) body.assets = sink.assets;
-    images = Object.keys(sink.assets).length > 0;
-    if (sink.multipart) multipart = sink.files;
+    if (imageMode === "assets") {
+      if (Object.keys(sink.assets).length > 0) body.assets = sink.assets;
+      images = Object.keys(sink.assets).length > 0;
+      if (sink.multipart) multipart = sink.files;
+    } else if (sink.images.length) body.images = sink.images;
   }
   // A System One-shaped /v1/decisions client (Perplexity, Inception) talks to
   // a vendor of its own family: its extensions go through for that vendor to check.
@@ -304,7 +348,46 @@ export function s1Encode(ir, upstreamDialect, model, newId, options) {
     }
   }
   if (ir.questions.some((question) => question.type === "box")) images = true;
-  return { body: body, multipartFiles: multipart, images: images };
+  if (upstreamDialect === "parallel") return parallelBody(body);
+  // Uploaded files go on as parts only with a body that went as written.
+  return { body: body, multipartFiles: multipart, images: images, forwardFiles: !!sameFamily };
+}
+
+// Parallel Decisions (POST https://api.parallel.ai/v1/decisions): System One's
+// state and questions without a model or images; instructions are text on
+// every question, choice has 2 to 255 options and score 2 to 10 levels, and
+// question names are letters, digits, - and _.
+function parallelText(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function parallelBody(body) {
+  const questions = {};
+  for (const name of Object.keys(body.questions)) {
+    const question = body.questions[name];
+    const where = 'Question "' + name + '"';
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) fail(where + ": Parallel question names hold only letters, digits, - and _", "invalid_request");
+    if (["noul", "choice", "score"].indexOf(question.type) < 0) fail(where + " has type " + question.type + "; Parallel supports noul, choice, and score", "unsupported_question_type");
+    const out = { type: question.type, instructions: question.instructions === undefined || question.instructions === null ? name : parallelText(question.instructions) };
+    if (question.type === "noul" && isObject(question.criteria)) {
+      const criteria = {};
+      for (const key of ["true", "false"]) if (question.criteria[key] !== undefined && question.criteria[key] !== null) criteria[key] = parallelText(question.criteria[key]);
+      if (Object.keys(criteria).length) out.criteria = criteria;
+    } else if (question.type === "choice") {
+      const keys = Object.keys(question.criteria);
+      if (keys.length < 2 || keys.length > 255) fail(where + " has " + keys.length + " options; Parallel accepts 2 to 255", "limit_exceeded");
+      out.criteria = {};
+      for (const key of keys) out.criteria[key] = question.criteria[key] === null || question.criteria[key] === undefined ? key : parallelText(question.criteria[key]);
+    } else if (question.type === "score") {
+      if (question.criteria.length < 2 || question.criteria.length > 10) fail(where + " has " + question.criteria.length + " levels; Parallel accepts 2 to 10", "limit_exceeded");
+      out.criteria = question.criteria.map(parallelText);
+    }
+    questions[name] = out;
+  }
+  if (body.assets !== undefined || body.images !== undefined) fail("Parallel decisions take no images", "unsupported_modality");
+  const out = {};
+  for (const key of Object.keys(body)) if (key !== "model") out[key] = key === "questions" ? questions : body[key];
+  return { body: out, multipartFiles: null, images: false };
 }
 
 // ---- upstream reply ---------------------------------------------------------

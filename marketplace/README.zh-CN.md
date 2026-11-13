@@ -9,7 +9,7 @@ locale: zh-CN
 
 - 渠道类型选 Task Plugin（61），插件选 Decision。
 - Base URL 填上游地址，不带接口路径；密钥填上游 API Key 原文。
-- 在插件配置里选上游协议：`systemone`（默认）、`openrouter`、`openai`、`gemini`、`vercel`、`vercel_sdk` 或 `databricks`。插件不会根据域名猜测协议。
+- 在插件配置里选上游协议：`systemone`（默认）、`openrouter`、`openai`、`gemini`、`vercel`、`vercel_sdk`、`databricks`、`parallel` 或 `cloudflare_openai`；抽取用 `extractions` 或 `clairic`。图片写法不同的 System One 兼容厂商用 `imageMode` 设置。插件不会根据域名猜测协议。
 - 可选设置：自定义上游路径，`{model}` 代表上游模型；密钥请求头（Bearer、`x-goog-api-key`、`api-key`、`x-api-key` 或自定义）；按模型指定协议、路径和上游模型 ID。
 - 上游是另一台装了本插件的 New API 时，选 New API（60），并在扩展插件里加上 Decision。
 
@@ -24,6 +24,7 @@ locale: zh-CN
 | `POST /v1/evaluate` | Vercel Evaluation |
 | `POST /v1/scaledown` | ScaleDown |
 | `POST /api/2.0/ai-functions/ai-decide` | Databricks ai-decide，另加 `model` 用于路由 |
+| `POST /api/alpha/extractions` | OpenRouter Extractions（从文本或图片抽取有类型的值） |
 
 所有路径也能加 `/decision` 前缀，只在路径与 New API 或其它插件冲突时使用。插件声明了 100 多个决策模型，渠道里可直接勾选：TypeSafe Jev、Liquid d1、Laya、OpenAI `gpt-6-luna`、Gemini Decision 1、Perplexity Decider、Microsoft Decision 1、Upstage、Nimble、SubQ、Mercury Decide、Telnyx、Cloudflare Clef、ScaleDown、Baseten、Fireworks、Drex、Reflex、Respan、Tev1，包括厂商官方 ID 和 OpenRouter、Vercel 上的写法；其它模型名填进渠道，再重定向到 `decision-custom`，上游收到的是客户端的名字，或 `upstreamModels` 里指定的 ID。
 

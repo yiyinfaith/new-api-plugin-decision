@@ -145,11 +145,16 @@ export function requireUniqueNames(questions) {
 // sink.assets, with a fresh id per image as TypeSafe recommends.
 export function contentToSystemOne(content, sink, where) {
   if (!content || content.length === 0) return null;
-  const items = content.map(function (segment) {
-    if (segment.t === "text") return segment.text;
-    if (segment.t === "json") return segment.value;
-    return sink.add(segment, where);
-  });
+  // A sink returns nothing for an image it sends outside the content (a
+  // top-level images array).
+  const items = content
+    .map(function (segment) {
+      if (segment.t === "text") return segment.text;
+      if (segment.t === "json") return segment.value;
+      return sink.add(segment, where);
+    })
+    .filter((item) => item !== undefined);
+  if (items.length === 0) return null;
   if (items.length === 1) return items[0];
   // Adjacent strings stay separate array items; System One reads an array of
   // text values in order.

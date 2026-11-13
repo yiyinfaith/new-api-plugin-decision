@@ -9,7 +9,7 @@ import { toDecisionError } from "./ir.js";
 import { CLIENTS, CLIENT_ROUTES, UPSTREAMS, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
 import { fail, headerValue, isObject } from "./util.js";
 
-const VERSION = "1.0.3";
+const VERSION = "1.1.0";
 
 const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context";
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
@@ -23,6 +23,7 @@ const DECODERS = {
   gemini: "decodeGemini",
   vercel: "decodeEvaluate",
   databricks: "decodeDatabricks",
+  extractions: "decodeExtractions",
 };
 
 export const meta = {
@@ -131,7 +132,7 @@ function submitRequest(ctx) {
   const prepared = prepare(ctx);
   const ir = prepared.ir;
   const route = prepared.route;
-  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel });
+  const encoded = encodeUpstream(route.protocol, ir, route.model, () => utils.uuid(), { fillInstructions: route.fillInstructions, keepModel: route.keepModel, imageMode: route.imageMode });
   const headers = { Accept: "application/json" };
   for (const name of Object.keys(route.headers)) headers[name] = route.headers[name];
   if (route.upstream.family === "systemone") {
@@ -147,7 +148,7 @@ function submitRequest(ctx) {
   const request = { url: route.url, method: "POST", headers: headers };
   // System One with uploaded images: the JSON goes first in a part named
   // request, then each file, as the TypeSafe SDKs send it.
-  const passthroughFiles = route.upstream.family === "systemone" && ir.source.family === "systemone" && ir.passthrough ? ctx.files || [] : [];
+  const passthroughFiles = encoded.forwardFiles ? ctx.files || [] : [];
   const parts = encoded.multipartFiles || (passthroughFiles.length ? passthroughFiles.map((file) => ({ name: file.field, fileRef: file.ref, filename: file.filename })) : null);
   if (parts) {
     request.bodyType = "multipart";
@@ -245,6 +246,8 @@ function readableMessage(upstream, fallback) {
   if (typeof upstream.detail === "string") return upstream.detail;
   if (isObject(upstream.detail) && typeof upstream.detail.message === "string") return upstream.detail.message;
   if (isObject(upstream.error) && typeof upstream.error.message === "string") return upstream.error.message;
+  // Cloudflare's API envelope.
+  if (Array.isArray(upstream.errors) && isObject(upstream.errors[0]) && typeof upstream.errors[0].message === "string") return upstream.errors[0].message;
   if (typeof upstream.message === "string") return upstream.message;
   return fallback;
 }
@@ -258,6 +261,7 @@ export const native = {
   decodeGemini: decodeAs("gemini"),
   decodeEvaluate: decodeAs("vercel"),
   decodeDatabricks: decodeAs("databricks"),
+  decodeExtractions: decodeAs("extractions"),
   renderDecision: function (ctx, task) {
     if (!isObject(task.data) || task.data.response === undefined) throw new Error("The decision result is unavailable");
     return task.data.response;
