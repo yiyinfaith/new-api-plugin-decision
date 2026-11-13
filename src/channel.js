@@ -4,7 +4,7 @@
 
 import { GATEWAY_PATHS, GATEWAY_PROTOCOLS, UPSTREAM_IDS, UPSTREAMS } from "./protocols.js";
 import { IMAGE_MODES } from "./systemone.js";
-import { fail, isObject } from "./util.js";
+import { fail, hasOwn, isObject, own } from "./util.js";
 
 // Declared routing slot: map any client model name to it in the channel's
 // model mapping, and the client's name (or upstreamModels[name]) is sent.
@@ -153,15 +153,16 @@ function encodeModel(model) {
   return encodeURIComponent(model).replace(/%2F/gi, "/").replace(/%40/gi, "@").replace(/%3A/gi, ":");
 }
 
-// Joins the Base URL and the path. A Base URL that already ends with the
-// path's first segment (https://api.typesafe.ai/v1 + /v1/systemone) is not
-// doubled, as the official TypeSafe plugin accepts.
+// Joins the Base URL and the path. A Base URL whose own path already ends
+// with the path's first segment (https://api.typesafe.ai/v1 + /v1/systemone)
+// is not doubled; the host name is never cut (http://api + /api/...).
 export function joinUrl(baseUrl, path) {
-  let base = String(baseUrl || "").replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(base)) fail("The channel Base URL must be an http(s) address", "invalid_config", 500);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const origin = /^https?:\/\/[^/?#]+/i.exec(base);
+  if (!origin) fail("The channel Base URL must be an http(s) address", "invalid_config", 500);
   const first = "/" + path.split("/")[1];
-  if (first.length > 1 && base.toLowerCase().endsWith(first.toLowerCase()) && path.length > first.length) base = base.slice(0, -first.length);
-  return base + path;
+  const doubled = first.length > 1 && path.length > first.length && base.length - first.length >= origin[0].length && base.toLowerCase().endsWith(first.toLowerCase());
+  return (doubled ? base.slice(0, -first.length) : base) + path;
 }
 
 // Everything a request needs to reach its upstream.
@@ -171,10 +172,10 @@ export function resolveChannel(ctx) {
   const mapped = ctx.upstreamModel || ctx.model;
   const names = [clientModel, mapped];
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
-  if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
+  if (!hasOwn(UPSTREAMS, protocol)) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
   const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
   // Another New API serves each protocol on this plugin's client routes.
-  if (gateway && GATEWAY_PROTOCOLS[protocol]) protocol = GATEWAY_PROTOCOLS[protocol];
+  if (gateway && own(GATEWAY_PROTOCOLS, protocol)) protocol = GATEWAY_PROTOCOLS[protocol];
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -192,6 +193,7 @@ export function resolveChannel(ctx) {
   const headers = {};
   const key = ctx.apiKey || "";
   let auth = gateway ? "bearer" : typeof config.authType === "string" ? config.authType : "auto";
+  if (AUTH_TYPES.indexOf(auth) < 0) fail("The channel names an unknown key header type " + auth, "invalid_config", 500);
   if (auth === "auto") auth = upstream.auth;
   if (auth === "bearer") headers.Authorization = gateway && ctx.authHeader ? ctx.authHeader : "Bearer " + key;
   else if (auth === "x-goog-api-key" || auth === "api-key" || auth === "x-api-key") headers[auth] = key;
@@ -213,7 +215,8 @@ export function resolveChannel(ctx) {
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
     perCallPrice: config.perCallPrice === true,
-    imageMode: IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
+    // Another New API takes System One images as assets, on its client routes.
+    imageMode: !gateway && IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };

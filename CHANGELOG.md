@@ -14,8 +14,16 @@
   - `cloudflare_openai`：Cloudflare Workers AI 的 `openai/decisions`，OpenAI 请求体包在 `{model, input}` 里，自动拆开 Workers AI 的回复外层和 `success: false` 错误。
 - **图片写法 `imageMode`**：兼容 System One 的厂商可以收到它们自己的图片写法：Ollama 的 Base64 字符串、SubQ 的 `{mediaType, base64}`、Cloudflare Clef 的 `{content_type, base64}`，以及 Perplexity、Requesty、Inception 的 `state` 内 `image_url`。之前这些厂商只能发文本。
 - **厂商自有题型**：`/v1/systemone` 等所有 System One 路由都接受 Perplexity `locate`、Inception `extract`、Respan `number` 等题型，原样发往 System One 族上游；其它协议仍明确拒绝。
-- **修复**：图片写法不是 `assets` 时，上传的图片文件不再被当作 multipart 分段转发。
-- 测试：N × N 矩阵扩展到 8 种客户端格式 × 9 种上游协议，新增抽取和厂商格式测试，共 159 个。
+- **修复**：
+  - 图片写法不是 `assets` 时，上传的图片文件不再被当作 multipart 分段转发。
+  - 问题名、资源名、选项名等与 JavaScript 对象自带成员同名（如 `constructor`、`toString`）时不再被误判：不会被当成重名问题，未引用的资源也会报错。
+  - 题型、图片格式、字段类型写成 `constructor` 这类名字时，现在会明确拒绝，不再被当成合法取值。
+  - 请求里用 `__proto__` 作键名时明确返回 400，不再让对应的问题或答案静默丢失。
+  - Base URL 只有主机名、且主机名与路径第一段相同时（如 `http://api` 加 `/api/alpha/decisions`），不再把主机名截掉。
+  - 渠道的 `authType` 不是有效取值时明确报配置错误，不再静默不发密钥。
+  - 上游是另一台 New API 时忽略 `imageMode`，图片总按 `assets` 发送，对方能正常接收。
+  - `state-image-url` 写法下只有一张图片时，`state` 也发成数组，不再变成一个 JSON 对象。
+- 测试：N × N 矩阵扩展到 8 种客户端格式 × 9 种上游协议，新增抽取、厂商格式和代码审计回归测试，共 167 个。
 
 ## 1.0.3（2026-11-13）
 
@@ -72,5 +80,5 @@
 - 六种上游协议：`systemone`、`openrouter`、`openai`、`gemini`、`vercel`、`vercel_sdk`，经 Decision IR 双向转换；渠道可指定协议、路径（支持 `{model}`）、密钥请求头，并按模型覆盖协议、路径和上游模型 ID。
 - 任意客户端模型名：重定向到 `decision-custom` 即可，上游收到客户端的名字或 `upstreamModels` 指定的 ID。
 - 计费字段：输入、缓存读取、缓存写入、输出；`gpt-6-luna` 系列另有长上下文字段、没有输出字段。按上界预扣，按上游用量结算；上游没报用量时保留预扣；模型没配任务表达式价格时拒绝请求。
-- 保留官方 TypeSafe 插件 1.2.0 的全部能力：四种题型、图片（Base64 与 SDK multipart）、图片与长上下文请求头、TypeSafe 错误格式、JSON 键顺序。
+- 完整的 System One 能力：四种题型、图片（Base64 与 SDK multipart）、图片与长上下文请求头、TypeSafe 错误格式、JSON 键顺序。
 - 多模态：图片在各协议间转换；音频、视频、PDF 发往 Gemini；上游不支持的内容和题型明确报错。

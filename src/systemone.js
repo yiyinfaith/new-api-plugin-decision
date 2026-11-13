@@ -13,7 +13,7 @@ import {
   requireUniqueNames,
   QUESTION_TYPES,
 } from "./ir.js";
-import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64, pick, reportedCost } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64, own, pick, reportedCost } from "./util.js";
 
 const S1_BASE_FIELDS = ["model", "state", "questions", "assets"];
 // Members a dialect adds on top of System One. important ones change what the
@@ -80,7 +80,7 @@ function s1Assets(assets, files) {
   if (assets === undefined) return {};
   if (!isObject(assets) || Object.keys(assets).length === 0) fail("assets must be a nonempty object");
   const result = {};
-  const usedParts = {};
+  const usedParts = Object.create(null);
   for (const key of Object.keys(assets)) {
     const asset = assets[key];
     const where = 'Asset "' + key + '"';
@@ -93,12 +93,12 @@ function s1Assets(assets, files) {
       if (usedParts[asset.part]) fail('Two assets name the same part "' + asset.part + '"');
       usedParts[asset.part] = true;
       const format = typeof asset.format === "string" ? asset.format.toLowerCase() : "";
-      const mime = S1_IMAGE_FORMATS[format] || s1MimeFromFile(file);
+      const mime = own(S1_IMAGE_FORMATS, format) || s1MimeFromFile(file);
       result[key] = { t: "media", kind: "image", mime: mime, fileRef: file.ref, filename: file.filename, size: file.size };
       continue;
     }
     const format = typeof asset.format === "string" ? asset.format : "";
-    if (!S1_IMAGE_FORMATS[format]) fail(where + " needs format png, jpg, or jpeg with data_base64");
+    if (!own(S1_IMAGE_FORMATS, format)) fail(where + " needs format png, jpg, or jpeg with data_base64");
     if (!isStrictBase64(asset.data_base64)) fail(where + " data_base64 must be standard base64 without a data: prefix or whitespace");
     result[key] = { t: "media", kind: "image", mime: S1_IMAGE_FORMATS[format], data: asset.data_base64 };
   }
@@ -111,7 +111,7 @@ function s1Assets(assets, files) {
 function s1ReferencedAssets(body, assets) {
   const keys = Object.keys(assets);
   if (keys.length === 0) return;
-  const seen = {};
+  const seen = Object.create(null);
   const visit = function (value) {
     if (typeof value === "string") {
       for (const key of keys) if (value.indexOf(key) >= 0) seen[key] = true;
@@ -330,6 +330,8 @@ export function s1Encode(ir, upstreamDialect, model, newId, options) {
     const sink = imageMode === "assets" ? s1Sink(newId) : s1ImageSink(imageMode);
     body.state = contentToSystemOne(ir.input, sink, "The input");
     if (body.state === null) body.state = "";
+    // A lone image part still goes as a list of parts, never as a JSON state.
+    else if (imageMode === "state-image-url" && isObject(body.state) && body.state.type === "image_url") body.state = [body.state];
     body.questions = {};
     for (const question of ir.questions) body.questions[question.name] = s1QuestionFromIR(question, sink, fill);
     if (imageMode === "assets") {

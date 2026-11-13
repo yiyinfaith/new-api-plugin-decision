@@ -7,7 +7,7 @@ import { CHANNEL_CONFIG, resolveChannel } from "./channel.js";
 import { MODELS } from "./models.js";
 import { toDecisionError } from "./ir.js";
 import { CLIENTS, CLIENT_ROUTES, UPSTREAMS, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
-import { fail, headerValue, isObject } from "./util.js";
+import { fail, hasOwn, hasProtoKey, headerValue, isObject, own } from "./util.js";
 
 const VERSION = "1.1.0";
 
@@ -98,6 +98,7 @@ function decodeAs(hint) {
   return guarded(function (ctx) {
     const body = clientBody(ctx.body);
     const protocol = hint === "decisions" ? clientProtocol("/v1/decisions", body.value) : hint;
+    if (hasProtoKey(body.value)) fail("The request cannot use __proto__ as a name");
     if (body.files.length && CLIENTS[protocol].family !== "systemone") fail("Only System One requests may upload files as multipart parts");
     const ir = CLIENTS[protocol].decode(body.value, body.files);
     return { kind: "submit", model: ir.model, action: protocol, requestBody: { protocol: protocol, body: body.value } };
@@ -113,7 +114,7 @@ function longContext(ctx) {
 // are called several times and must not keep state between calls.
 function prepare(ctx) {
   const request = ctx.requestBody;
-  if (!isObject(request) || !CLIENTS[request.protocol]) fail("The task request is not a Decision request", "invalid_request", 500);
+  if (!isObject(request) || typeof request.protocol !== "string" || !hasOwn(CLIENTS, request.protocol)) fail("The task request is not a Decision request", "invalid_request", 500);
   const ir = CLIENTS[request.protocol].decode(request.body, ctx.files || []);
   const route = resolveChannel(ctx);
   if (route.maxQuestions > 0 && ir.questions.length > route.maxQuestions)
@@ -211,7 +212,7 @@ export function extractUsage(ctx) {
 export function extractUsageOnComplete(ctx, result, data) {
   // An upstream without token usage is billed per successful request; the
   // protocol was recorded by parseSubmitResponse, never by the client.
-  const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
+  const upstream = isObject(data) ? own(UPSTREAMS, data.protocol) : null;
   if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
   // A reply without usage settles as one request: a per-request price bills

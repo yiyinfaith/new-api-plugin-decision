@@ -26,7 +26,7 @@ locale: zh-CN
 | `POST /api/2.0/ai-functions/ai-decide` | Databricks ai-decide，另加 `model` 用于路由 |
 | `POST /api/alpha/extractions` | OpenRouter Extractions（从文本或图片抽取有类型的值） |
 
-所有路径也能加 `/decision` 前缀，只在路径与 New API 或其它插件冲突时使用。插件声明了 100 多个决策模型，渠道里可直接勾选：TypeSafe Jev、Liquid d1、Laya、OpenAI `gpt-6-luna`、Gemini Decision 1、Perplexity Decider、Microsoft Decision 1、Upstage、Nimble、SubQ、Mercury Decide、Telnyx、Cloudflare Clef、ScaleDown、Baseten、Fireworks、Drex、Reflex、Respan、Tev1，包括厂商官方 ID 和 OpenRouter、Vercel 上的写法；其它模型名填进渠道，再重定向到 `decision-custom`，上游收到的是客户端的名字，或 `upstreamModels` 里指定的 ID。
+所有路径也能加 `/decision` 前缀，只在路径被 New API 的其他路由占用、请求进不了 Decision 时使用。插件声明了 100 多个决策模型，渠道里可直接勾选：TypeSafe Jev、Liquid d1、Laya、OpenAI `gpt-6-luna`、Gemini Decision 1、Perplexity Decider、Microsoft Decision 1、Upstage、Nimble、SubQ、Mercury Decide、Telnyx、Cloudflare Clef、ScaleDown、Baseten、Fireworks、Drex、Reflex、Respan、Tev1，包括厂商官方 ID 和 OpenRouter、Vercel 上的写法；其它模型名填进渠道，再重定向到 `decision-custom`，上游收到的是客户端的名字，或 `upstreamModels` 里指定的 ID。
 
 ## 计费
 

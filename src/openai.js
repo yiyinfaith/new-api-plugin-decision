@@ -5,7 +5,7 @@
 // the same body. Bifrost reports usage as prompt_tokens/completion_tokens.
 
 import { assignQuestionNames, contentToText, isObjectContent, requireUniqueNames } from "./ir.js";
-import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, parseDataUrl, pick, reportedCost } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, own, parseDataUrl, pick, reportedCost } from "./util.js";
 
 const OA_FIELDS = ["model", "input", "questions"];
 const OA_IGNORABLE = ["prompt_cache_key", "prompt_cache_options", "safety_identifier"];
@@ -65,7 +65,7 @@ function oaInput(input, notes) {
 function oaQuestion(question, index) {
   const where = "questions[" + index + "]";
   if (!isObject(question)) fail(where + " must be an object");
-  const type = OA_TYPES[question.type];
+  const type = own(OA_TYPES, question.type);
   if (!type) fail(where + " has type " + question.type + "; use predicate, choice, score, or box", "unsupported_question_type");
   const named = typeof question.name === "string" && question.name !== "";
   if (question.name !== undefined && question.name !== null && typeof question.name !== "string") fail(where + " name must be a string");
@@ -74,7 +74,7 @@ function oaQuestion(question, index) {
   if (type === "choice") {
     const choices = question.choices;
     if (!Array.isArray(choices) || choices.length < 2 || choices.length > 255) fail(where + " choices must hold 2 to 255 options");
-    const seen = {};
+    const seen = Object.create(null);
     out.options = choices.map(function (choice, position) {
       if (!isObject(choice) || (typeof choice.value !== "string" && typeof choice.value !== "boolean"))
         fail(where + ".choices[" + position + "] needs a string or boolean value");

@@ -119,7 +119,7 @@ export function contentToText(content, where) {
 // Names for questions the client left unnamed (OpenAI names are optional),
 // unique against the names it did give.
 export function assignQuestionNames(questions) {
-  const used = {};
+  const used = Object.create(null);
   for (const question of questions) if (question.named) used[question.name] = true;
   let counter = 0;
   for (const question of questions) {
@@ -134,7 +134,7 @@ export function assignQuestionNames(questions) {
 }
 
 export function requireUniqueNames(questions) {
-  const seen = {};
+  const seen = Object.create(null);
   for (const question of questions) {
     if (seen[question.name]) fail('Two questions share the name "' + question.name + '"', "invalid_request");
     seen[question.name] = true;

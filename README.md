@@ -7,7 +7,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 - **抽取（Extractions）**：支持 OpenRouter 的 Extractions API，从文本或图片里抽取有类型的字段，上游可以是 OpenRouter 或 Cloudflare Clairic，见[抽取](#抽取extractions)。
 - **常见模型开箱即用**：声明了 100 多个经官方文档或模型目录核实的决策模型 ID（Jev、Liquid d1、Laya、OpenAI、Gemini、Perplexity 等），渠道里直接勾选；其它名字重定向到 `decision-custom` 即可，见[模型](#模型)。
 - **按真实用量计费**：输入、缓存读取、缓存写入、输出分开上报。普通模型直接用 New API 的模型级任务表达式；只有 `gpt-6-luna` 要另配插件覆盖价，和它的普通聊天计费互不影响。不报用量的 Databricks ai-decide 按次计费。
-- **完整保留官方 TypeSafe 插件的能力**：四种问题类型、图片、SDK 的 multipart 上传、长上下文、错误格式、JSON 键顺序。
+- **完整的 System One 能力**：四种问题类型、图片、TypeSafe SDK 的 multipart 上传、长上下文、错误格式、JSON 键顺序。
 
 当前版本：v1.1.0，渠道配置（`channelConfig`）需要 rc.50 及以上。
 
@@ -36,7 +36,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 | 按模型指定上游协议 `modelProtocols` | `{"模型名": "协议"}`，覆盖渠道协议 |
 | 按模型指定上游路径 `modelPaths` | `{"模型名": "/路径"}`，覆盖渠道路径 |
 | 按模型指定上游模型 ID `upstreamModels` | `{"模型名": "上游 ID"}`，覆盖模型重定向后的名字 |
-| System One 上游的图片写法 `imageMode` | 默认 `assets`（TypeSafe）。兼容 System One、但图片写法不同的厂商要改：`images-base64`（Ollama）、`images-subq`（SubQ）、`images-cloudflare`（Cloudflare Clef）、`state-image-url`（Perplexity、Requesty、Inception），见[多模态](#多模态) |
+| System One 上游的图片写法 `imageMode` | 默认 `assets`（TypeSafe）。兼容 System One、但图片写法不同的厂商要改：`images-base64`（Ollama）、`images-subq`（SubQ）、`images-cloudflare`（Cloudflare Clef）、`state-image-url`（Perplexity、Requesty、Inception），见[多模态](#多模态)。上游是另一台 New API 时不生效，总按 `assets` 发送 |
 | 允许模型固定按次价格 `perCallPrice` | 默认关。打开后，本渠道的模型可以用 New API 的固定价格（按次计费），上游回复有没有用量、有没有费用都能正常调用，见[按次计费](#按次计费模型固定价格) |
 | 缺少指令时用问题名补上 `fillInstructions` | 默认关。发往 System One 族上游时，没写 `instructions` 的问题用问题名补上；OpenCSG、Telnyx、Requesty 等要求每题都有指令的上游需要打开 |
 | 单次问题数上限 `maxQuestions` | 0 = 协议上限（OpenAI 400，其余不限）；超出直接报错，不拆分 |
@@ -51,7 +51,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 | `openai` | `/v1/decisions` | Bearer | OpenAI、Azure OpenAI（路径 `/openai/v1/decisions`，密钥头 `api-key`）、Fireworks、LiteLLM、Bifrost、LLM Gateway、Vercel `/v1/decisions` |
 | `gemini` | `/v1beta/decisions` | `x-goog-api-key` | Google Gemini Decisions |
 | `vercel` | `/v1/evaluate` | Bearer | Vercel AI Gateway Evaluation（旧接口，仍可用） |
-| `vercel_sdk` | `/v4/ai/evaluation-model` | Bearer | Vercel AI SDK 内部接口（模型放在 `ai-model-id` 头），兼容旧版 TypeSafe 插件用过的写法 |
+| `vercel_sdk` | `/v4/ai/evaluation-model` | Bearer | Vercel AI SDK 内部接口（模型放在 `ai-model-id` 头） |
 | `databricks` | `/api/2.0/ai-functions/ai-decide` | Bearer | Databricks AI Functions ai-decide（Beta）。请求里不带模型，回复没有 token 用量，[按次计费](#databricks-ai-decide按次计费) |
 | `parallel` | `/v1/decisions` | `x-api-key` | Parallel 官方接口，Base URL `https://api.parallel.ai`。请求里不带模型、不能带图片；Parallel 按次收费，价格用 `u("requests") * 0.001` |
 | `cloudflare_openai` | `/ai/run` | Bearer | Cloudflare Workers AI 的 `openai/decisions`（GPT-6 Luna），Base URL `https://api.cloudflare.com/client/v4/accounts/<账号ID>`，`upstreamModels` 把模型映射为 `openai/decisions`；图片只能是 data URL |
@@ -193,7 +193,7 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
 
 ## 调用
 
-**默认直接使用各协议的原生请求路径，不需要添加任何插件前缀**（例如 `/v1/systemone`、`/v1/decisions`、`/v1beta/decisions`）。只有在路径确实与 New API 主程序或其他已安装插件冲突、无法正确进入 Decision 时，才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`。带前缀的路径只进入本插件；`/v1`、`/api` 这些路径段本身不代表冲突。路径决定客户端协议，`model` 决定渠道和上游协议。
+**默认直接使用各协议的原生请求路径，不需要添加任何插件前缀**（例如 `/v1/systemone`、`/v1/decisions`、`/v1beta/decisions`）。只有在路径确实被 New API 中的其他路由占用、请求无法进入 Decision 时（例如 `/v1/systemone` 的请求没有走到 Decision 的渠道），才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`。带前缀的路径只进入本插件，适合排查路由问题；`/v1`、`/api` 这些路径段本身不代表冲突。路径决定客户端协议，`model` 决定渠道和上游协议。
 
 | 客户端协议 | 路径 |
 | --- | --- |
@@ -214,7 +214,6 @@ curl https://你的域名/v1/decisions -H "Authorization: Bearer $NEW_API_KEY" -
   - OpenRouter SDK 用 `https://你的域名/api`。
   - Google GenAI SDK 用 `https://你的域名`，并在 http options 里加 `Authorization: Bearer sk-...` 头（它默认只发 `x-goog-api-key`）。Azure SDK 同理，要改成发 Bearer 头。
   - Databricks ai-decide 格式直接用 HTTP 调用 `https://你的域名/api/2.0/ai-functions/ai-decide`，令牌填 New API 令牌，请求体里加 `model`。
-- 如果同时安装了官方 TypeSafe 插件，双方可能共享 `/v1/systemone`。正常情况下由模型和渠道绑定决定实际执行插件；如果遇到路由竞争或请求未进入 Decision，改用 `/decision/v1/systemone`。**只使用 Decision 不需要另装 TypeSafe 插件**，见[迁移](#从官方-typesafe-插件迁移)。
 
 ```text
             客户端协议                         上游协议（按渠道/模型配置）
@@ -311,7 +310,7 @@ New API 给插件请求定价时按下面的顺序找，找到就停（rc.50 实
 
 1. **插件覆盖价** `decision::<模型>`：只在两种情况下需要：
    - 模型同时用于普通聊天，目前只有 `gpt-6-luna`，见[下文](#gpt-6-luna聊天和-decisions-分开计费)。
-   - 模型也被另一个已安装的任务插件声明（如官方 TypeSafe 插件声明了 `jev-latest` 等 Jev 模型）。这时模型级表达式只能读两个插件都有的字段，New API 会拒绝保存读了 `cache_read_tokens` 的模型级表达式；要用完整表达式，就配在 `decision::jev-latest` 上，模型级价格留给另一个插件。
+   - 保存模型级表达式时 New API 报 `usage key cache_read_tokens is not declared` 之类的错误：同名模型在 New API 里还有别的任务计费来源，模型级表达式只能读各方共有的字段。这时把完整表达式配在 `decision::<模型>` 上（如 `decision::jev-latest`），模型级表达式保持原样。
 2. **客户端模型名的模型级任务表达式**：计费方式选「表达式」，表达式里用 `u("…")` 读插件上报的用量，结果单位是美元/次。
 3. **重定向后名字的模型级任务表达式**：如所有重定向到 `decision-custom` 的名字共用它的表达式，`my-jev → jev-latest` 共用 `jev-latest` 的表达式。
 4. 都没有时，New API 走按次路径，用模型的**固定价格**（按次计费）或**倍率**。插件在渠道打开了 `perCallPrice`、或上游不报用量（Databricks ai-decide）时接受这条路径，其余情况都拒绝：返回 400，不请求上游、不扣费。
@@ -432,7 +431,7 @@ tier("base", u("input_tokens") * P / 1000000 + u("cache_read_tokens") * P / 1000
 | 0 | 带 `:free` 的 OpenRouter 免费档、`respan/span-01-lite` |
 
 例外：
-- 同时装了官方 TypeSafe 插件时，Jev 模型（`jev-latest`、`jev-1.14.0` 等）的模板表达式要配在插件覆盖价 `decision::<模型>` 上，原因见[价格从哪里来](#价格从哪里来)。
+- 模型级表达式保存被拒（报 `usage key … is not declared`）时，把模板表达式配在插件覆盖价 `decision::<模型>` 上，原因见[价格从哪里来](#价格从哪里来)。
 - `reflex`、`morph/reflex`：输入 0.042，缓存读取 0.002，表达式里把 `cache_read_tokens` 的单价换成 0.002。
 - `gpt-6-luna` 系列用[插件覆盖价](#gpt-6-luna聊天和-decisions-分开计费)。
 - 按次收费：`parallel/parallel-decisions-fast`、`parallel/decisions-fast:free` 等 Parallel 模型用 `u("requests") * 0.001`；Databricks ai-decide 见[下文](#databricks-ai-decide按次计费)。
@@ -515,15 +514,6 @@ ai-decide 不返回 token 用量，插件也不编造 token：只上报 `u("requ
 - 上游回复里没有用量时，不会当作免费：token 表达式按预扣额度结算；`u("requests")` 表达式和固定按次价格照常按次结算。Databricks ai-decide 本来就没有用量，按次结算。
 - 上游报错、超时、插件拒绝的请求不扣费。
 
-## 从官方 TypeSafe 插件迁移
-
-Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时启用：
-
-1. 安装 Decision，不用停用 TypeSafe 插件。
-2. 把 TypeSafe 渠道的插件改成 Decision。插件配置默认就是 `systemone`，Base URL、密钥、模型和重定向都不用改。`/v1/systemone` 两个插件都能接，由渠道绑定的插件执行。
-3. 价格：Jev 模型现有的 `u("input_tokens")` 模型级表达式可以继续用。两个插件共享同名模型时，模型级表达式只能引用两边都有的字段；要把缓存 token 也计费，把[模板表达式](#常见模型价格模板)配在插件覆盖价 `decision::<模型>` 上。
-4. 没有渠道再绑定官方 TypeSafe 插件后即可停用它。迁移完成后优先使用 `/v1/systemone`；若有实际路由冲突，再使用 `/decision/v1/systemone`。
-
 ## 多模态
 
 | 内容 | System One 上游 | OpenAI 上游 | Gemini 上游 | Vercel 上游 | Databricks 上游 |
@@ -562,7 +552,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 - **倍率不能给决策请求计费**：New API 对任务插件只按「倍率 ÷ 2」美元每次扣费、不按 token 结算（`relay/helper/price.go` 的 `ModelPriceHelperPerCall`），所以决策模型要用模型级任务表达式，见[计费](#普通倍率为什么不能用于决策请求)。
 - **不拆分超限请求**：任务插件每次提交只能发一个上游请求（`utils.fetch` 在驱动钩子里只读），超过上限直接报 `limit_exceeded`，请在客户端拆分。
 - **键名对象的顺序**：回复由宿主序列化，`answers` 等对象按键名排序。发往上游的请求保持客户端的键顺序（`json-order@1`）；但用 multipart 图片转成内联 Base64 的请求例外，宿主会按键名排序。
-- multipart 转发给 System One 时，宿主写的 `request` 分段没有 `Content-Type` 头，和官方 TypeSafe 插件相同。
+- multipart 转发给 System One 时，宿主写的 `request` 分段没有 `Content-Type` 头。
 - 价格配置不对时宿主隐藏插件的说明文字，只显示 `plugin usage hook failed`。
 - Gemini Decisions、Vercel Evaluation 的部分字段只在第三方资料或 SDK 文档中出现，按 [API.md](API.md#兼容性) 的标注使用。
 - 只用严格的模拟上游测过、还没有真实渠道的：Databricks ai-decide、Parallel、Cloudflare Workers AI（openai/decisions、Clairic）、OpenRouter Extractions，以及 `imageMode` 的各种图片写法。OpenAI Decisions、Gemini Decisions（官方渠道）和 System One（OpenCode、OpenCSG）已用真实上游测过。
@@ -610,7 +600,6 @@ NA_BASE=http://127.0.0.1:49300 MOCK=http://127.0.0.1:49311 python3 tests/e2e/e2e
 项目：[yiyinfaith/new-api-plugin-decision](https://github.com/yiyinfaith/new-api-plugin-decision)。参考资料：
 
 - [New API 插件 API](https://github.com/QuantumNous/new-api/blob/main/docs/plugin-api/v1.md)
-- [官方 TypeSafe 插件](https://github.com/QuantumNous/new-api-plugins/tree/main/plugins/tasks/typesafe)
 - [TypeSafe System One](https://docs.typesafe.ai/api)
 - [OpenAI Decisions](https://developers.openai.com/api/reference/resources/decisions/methods/create)
 - [Gemini Decisions](https://aistudio.google.com/api-reference/decisions)
@@ -618,4 +607,4 @@ NA_BASE=http://127.0.0.1:49300 MOCK=http://127.0.0.1:49311 python3 tests/e2e/e2e
 - [OpenRouter](https://openrouter.ai/docs)
 - [Databricks ai-decide](https://docs.databricks.com/api/ai-functions/v1/ai-decide)
 
-本项目以 [AGPL-3.0](LICENSE) 许可发布。System One 请求校验改编自官方 TypeSafe 插件（QuantumNous/new-api-plugins，AGPL-3.0），归属说明保留在 `plugin.js` 文件头。
+本项目以 [AGPL-3.0](LICENSE) 许可发布。第三方代码的归属说明保留在 `plugin.js` 文件头。

@@ -19,7 +19,7 @@
 
 ## 接口一览
 
-所有路径都是 `POST`。**客户端优先直接使用下表中的原生路径，不要默认添加插件前缀**；仅当与 New API 主程序或其他插件发生实际路由冲突时，才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`、`/decision/v1beta/decisions`。`/v1`、`/api` 这样的路径段不构成冲突。
+所有路径都是 `POST`。**客户端优先直接使用下表中的原生路径，不要默认添加插件前缀**；仅当路径实际被 New API 中的其他路由占用、请求无法进入 Decision 时（例如 `/v1/systemone` 的请求没有走到 Decision 的渠道），才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`、`/decision/v1beta/decisions`；带前缀的路径只进入本插件。`/v1`、`/api` 这样的路径段不构成冲突。
 
 | 客户端协议 | 路径 | 请求体 | 回复 |
 | --- | --- | --- | --- |
@@ -33,7 +33,6 @@
 | Databricks ai-decide | `/api/2.0/ai-functions/ai-decide` | JSON（加 `model`） | Databricks ai-decide |
 | OpenRouter Extractions（抽取） | `/api/alpha/extractions` | JSON | OpenRouter Extractions |
 
-- Decision 独立支持 System One，不要求安装其他插件。如果同时安装官方 TypeSafe 插件，`/v1/systemone` 可能成为共享入口：优先检查模型和渠道绑定，必要时使用 `/decision/v1/systemone` 精确进入 Decision。
 - 请求都是同步的：一次请求一次回复，没有任务 ID 要轮询。
 - 不会占用 `/v1/tasks`、`/v1/chat/completions` 等其它接口。
 
@@ -41,7 +40,7 @@
 
 - **鉴权**：`Authorization: Bearer <New API 令牌>`。插件路由不认厂商自己的密钥头。
 - **模型**：`model` 必填，决定渠道；渠道的插件配置决定上游协议（见 [README](README.md#渠道配置)）。模型名大小写不同也能匹配声明的模型。
-- **未知字段**：每种格式都拒绝它没定义的顶层字段（`does not accept the request field …`），防止拼错的参数被静默丢弃。少数厂商扩展字段见各格式说明。
+- **未知字段**：每种格式都拒绝它没定义的顶层字段（`does not accept the request field …`），防止拼错的参数被静默丢弃。少数厂商扩展字段见各格式说明。请求里任何位置都不能用 `__proto__` 作键名（问题名、选项名、字段名等），否则返回 400。
 - **用量**：只取上游回复里的 usage；请求里不能写用量。上游不报用量时（Databricks ai-decide），其它格式回复里的 token 数为 0，计费按次。
 - **键顺序**：发往上游的请求保持客户端的 JSON 键顺序（TypeSafe 会把 state 当文本读，顺序影响答案）；回复中按名字索引的对象（如 `answers`）由 New API 按键名排序输出，OpenAI 格式的 `answers` 数组按提问顺序。
 - **同协议直通**：客户端和上游是同一协议族时，请求体原样转发（只换 `model`；Databricks ai-decide 去掉 `model`）；Databricks 请求发往 System One 族上游时也原样转发 `state` 和 `questions`。客户端和上游是同一种协议（System One、OpenAI、Gemini、Databricks）时，回复也原样返回，厂商扩展字段保留，只有 `usage` 换成该协议的标准字段（中转站加在 usage 里的成本、计费来源等不返回给客户端）。
@@ -51,7 +50,7 @@
 
 ### TypeSafe System One
 
-字段与 [TypeSafe 官方接口](https://docs.typesafe.ai/api) 一致，校验规则与官方 TypeSafe 插件 1.2.0 相同。
+字段与校验规则与 [TypeSafe 官方接口](https://docs.typesafe.ai/api) 一致。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -340,7 +339,7 @@ Vercel AI Gateway 旧接口 `/v1/evaluate`（已被 `/v1/decisions` 取代但仍
 | `extractions` | OpenRouter Extractions 请求体原样（换 `model`） | Bearer | `input_tokens`、`output_tokens`、`cost` |
 | `clairic` | `{model, state, fields, images?: [{content_type, base64}], reference_date?, options?}` | Bearer | `input_tokens`、`output_tokens` |
 
-System One 族上游的图片写法由渠道 `imageMode` 决定：`assets`（默认，TypeSafe）、`images-base64`（顶层 `images` 为 Base64 字符串数组，Ollama）、`images-subq`（`images: [{mediaType, base64}]`，SubQ）、`images-cloudflare`（`images: [{content_type, base64}]`，Cloudflare Clef）、`state-image-url`（`state` 里放 `{type: "image_url", image_url: {url: data URL}}`，Perplexity、Requesty、Inception）。
+System One 族上游的图片写法由渠道 `imageMode` 决定：`assets`（默认，TypeSafe）、`images-base64`（顶层 `images` 为 Base64 字符串数组，Ollama）、`images-subq`（`images: [{mediaType, base64}]`，SubQ）、`images-cloudflare`（`images: [{content_type, base64}]`，Cloudflare Clef）、`state-image-url`（`state` 里放 `{type: "image_url", image_url: {url: data URL}}`，Perplexity、Requesty、Inception；只有一张图片时 `state` 也是数组）。上游是另一台 New API 时 `imageMode` 不生效，总按 `assets` 发送。
 
 上游是另一台装了本插件的 New API 时，`parallel` 按 `systemone`、`cloudflare_openai` 按 `openai`、`clairic` 按 `extractions` 发给对方。插件内部会使用对方的专属入口确保命中 Decision：`vercel_sdk` 使用 `/decision/v1/evaluate`（带 `model`），`databricks` 使用 `/decision/api/2.0/ai-functions/ai-decide` 并带上 `model`。这不改变普通客户端默认直接使用原生路径的建议。
 

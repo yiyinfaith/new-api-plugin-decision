@@ -17,6 +17,21 @@ function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+// A lookup table's own entry: a client value such as "constructor" never
+// reaches an inherited member.
+function own(table, key) {
+  return typeof key === "string" && hasOwn(table, key) ? table[key] : undefined;
+}
+
+// A client JSON value that holds a __proto__ member: written into a plain
+// object, it would replace the prototype instead of adding the member.
+function hasProtoKey(value) {
+  if (Array.isArray(value)) return value.some(hasProtoKey);
+  if (!isObject(value)) return false;
+  if (hasOwn(value, "__proto__")) return true;
+  return Object.keys(value).some((key) => hasProtoKey(value[key]));
+}
+
 // A client-facing failure. status is the HTTP status the gateway should use,
 // code a short machine-readable reason shown in the client's error format.
 class DecisionError extends Error {
@@ -234,7 +249,7 @@ function contentToText(content, where) {
 // Names for questions the client left unnamed (OpenAI names are optional),
 // unique against the names it did give.
 function assignQuestionNames(questions) {
-  const used = {};
+  const used = Object.create(null);
   for (const question of questions) if (question.named) used[question.name] = true;
   let counter = 0;
   for (const question of questions) {
@@ -249,7 +264,7 @@ function assignQuestionNames(questions) {
 }
 
 function requireUniqueNames(questions) {
-  const seen = {};
+  const seen = Object.create(null);
   for (const question of questions) {
     if (seen[question.name]) fail('Two questions share the name "' + question.name + '"', "invalid_request");
     seen[question.name] = true;
@@ -360,7 +375,7 @@ function s1Assets(assets, files) {
   if (assets === undefined) return {};
   if (!isObject(assets) || Object.keys(assets).length === 0) fail("assets must be a nonempty object");
   const result = {};
-  const usedParts = {};
+  const usedParts = Object.create(null);
   for (const key of Object.keys(assets)) {
     const asset = assets[key];
     const where = 'Asset "' + key + '"';
@@ -373,12 +388,12 @@ function s1Assets(assets, files) {
       if (usedParts[asset.part]) fail('Two assets name the same part "' + asset.part + '"');
       usedParts[asset.part] = true;
       const format = typeof asset.format === "string" ? asset.format.toLowerCase() : "";
-      const mime = S1_IMAGE_FORMATS[format] || s1MimeFromFile(file);
+      const mime = own(S1_IMAGE_FORMATS, format) || s1MimeFromFile(file);
       result[key] = { t: "media", kind: "image", mime: mime, fileRef: file.ref, filename: file.filename, size: file.size };
       continue;
     }
     const format = typeof asset.format === "string" ? asset.format : "";
-    if (!S1_IMAGE_FORMATS[format]) fail(where + " needs format png, jpg, or jpeg with data_base64");
+    if (!own(S1_IMAGE_FORMATS, format)) fail(where + " needs format png, jpg, or jpeg with data_base64");
     if (!isStrictBase64(asset.data_base64)) fail(where + " data_base64 must be standard base64 without a data: prefix or whitespace");
     result[key] = { t: "media", kind: "image", mime: S1_IMAGE_FORMATS[format], data: asset.data_base64 };
   }
@@ -391,7 +406,7 @@ function s1Assets(assets, files) {
 function s1ReferencedAssets(body, assets) {
   const keys = Object.keys(assets);
   if (keys.length === 0) return;
-  const seen = {};
+  const seen = Object.create(null);
   const visit = function (value) {
     if (typeof value === "string") {
       for (const key of keys) if (value.indexOf(key) >= 0) seen[key] = true;
@@ -610,6 +625,8 @@ function s1Encode(ir, upstreamDialect, model, newId, options) {
     const sink = imageMode === "assets" ? s1Sink(newId) : s1ImageSink(imageMode);
     body.state = contentToSystemOne(ir.input, sink, "The input");
     if (body.state === null) body.state = "";
+    // A lone image part still goes as a list of parts, never as a JSON state.
+    else if (imageMode === "state-image-url" && isObject(body.state) && body.state.type === "image_url") body.state = [body.state];
     body.questions = {};
     for (const question of ir.questions) body.questions[question.name] = s1QuestionFromIR(question, sink, fill);
     if (imageMode === "assets") {
@@ -1058,7 +1075,7 @@ function validateField(name, field) {
   const where = 'Field "' + name + '"';
   if (!name.trim()) fail("Field names must contain text");
   if (!isObject(field)) fail(where + " must be an object");
-  const keys = EX_TYPES[field.type];
+  const keys = own(EX_TYPES, field.type);
   if (!keys) fail(where + " must have type " + Object.keys(EX_TYPES).join(", "), "unsupported_field_type");
   for (const key of Object.keys(field)) if (keys.indexOf(key) < 0) fail(where + " (" + field.type + ") does not accept " + key, "unknown_field");
   for (const key of REQUIRED[field.type] || []) if (field[key] === undefined) fail(where + " needs " + key);
@@ -1186,7 +1203,7 @@ function exInteger(value) {
 function exParse(body, ir) {
   if (!isObject(body) || !isObject(body.answers)) fail("The upstream reply has no answers object", "upstream_invalid", 502);
   for (const name of Object.keys(ir.fields)) {
-    const answer = body.answers[name];
+    const answer = hasOwn(body.answers, name) ? body.answers[name] : null;
     if (!isObject(answer) || typeof answer.type !== "string" || !hasOwn(answer, "value")) fail('The answer to field "' + name + '" is missing', "upstream_invalid", 502);
   }
   let usage = null;
@@ -1283,7 +1300,7 @@ function oaInput(input, notes) {
 function oaQuestion(question, index) {
   const where = "questions[" + index + "]";
   if (!isObject(question)) fail(where + " must be an object");
-  const type = OA_TYPES[question.type];
+  const type = own(OA_TYPES, question.type);
   if (!type) fail(where + " has type " + question.type + "; use predicate, choice, score, or box", "unsupported_question_type");
   const named = typeof question.name === "string" && question.name !== "";
   if (question.name !== undefined && question.name !== null && typeof question.name !== "string") fail(where + " name must be a string");
@@ -1292,7 +1309,7 @@ function oaQuestion(question, index) {
   if (type === "choice") {
     const choices = question.choices;
     if (!Array.isArray(choices) || choices.length < 2 || choices.length > 255) fail(where + " choices must hold 2 to 255 options");
-    const seen = {};
+    const seen = Object.create(null);
     out.options = choices.map(function (choice, position) {
       if (!isObject(choice) || (typeof choice.value !== "string" && typeof choice.value !== "boolean"))
         fail(where + ".choices[" + position + "] needs a string or boolean value");
@@ -1981,7 +1998,7 @@ function vcState(state) {
 function vcQuestion(id, question) {
   const where = 'Question "' + id + '"';
   if (!isObject(question)) fail(where + " must be an object");
-  const type = VC_TYPES[question.type];
+  const type = own(VC_TYPES, question.type);
   if (!type) fail(where + " has type " + question.type + "; use boolean, choice, score, or box", "unsupported_question_type");
   const out = { name: id, named: true, type: type, instructions: contentFromSystemOne(question.instructions, null), raw: question };
   const criteria = question.criteria;
@@ -2119,7 +2136,7 @@ function vcMeta(body, name) {
 function vcParseAnswer(answer, question, confidence, where) {
   if (!isObject(answer)) fail(where + " is missing", "upstream_invalid", 502);
   if (answer.type === "refusal") return { type: "refusal", raw: answer };
-  const type = VC_TYPES[answer.type];
+  const type = own(VC_TYPES, answer.type);
   if (type !== question.type) fail(where + " has type " + answer.type + " for a " + question.type + " question", "upstream_invalid", 502);
   const conf = isFiniteNumber(answer.confidence) ? answer.confidence : isFiniteNumber(confidence) ? confidence : undefined;
   if (type === "noul") {
@@ -2550,15 +2567,16 @@ function encodeModel(model) {
   return encodeURIComponent(model).replace(/%2F/gi, "/").replace(/%40/gi, "@").replace(/%3A/gi, ":");
 }
 
-// Joins the Base URL and the path. A Base URL that already ends with the
-// path's first segment (https://api.typesafe.ai/v1 + /v1/systemone) is not
-// doubled, as the official TypeSafe plugin accepts.
+// Joins the Base URL and the path. A Base URL whose own path already ends
+// with the path's first segment (https://api.typesafe.ai/v1 + /v1/systemone)
+// is not doubled; the host name is never cut (http://api + /api/...).
 function joinUrl(baseUrl, path) {
-  let base = String(baseUrl || "").replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(base)) fail("The channel Base URL must be an http(s) address", "invalid_config", 500);
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const origin = /^https?:\/\/[^/?#]+/i.exec(base);
+  if (!origin) fail("The channel Base URL must be an http(s) address", "invalid_config", 500);
   const first = "/" + path.split("/")[1];
-  if (first.length > 1 && base.toLowerCase().endsWith(first.toLowerCase()) && path.length > first.length) base = base.slice(0, -first.length);
-  return base + path;
+  const doubled = first.length > 1 && path.length > first.length && base.length - first.length >= origin[0].length && base.toLowerCase().endsWith(first.toLowerCase());
+  return (doubled ? base.slice(0, -first.length) : base) + path;
 }
 
 // Everything a request needs to reach its upstream.
@@ -2568,10 +2586,10 @@ function resolveChannel(ctx) {
   const mapped = ctx.upstreamModel || ctx.model;
   const names = [clientModel, mapped];
   let protocol = perModel(config, "modelProtocols", names) || (typeof config.protocol === "string" && config.protocol) || "systemone";
-  if (!UPSTREAMS[protocol]) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
+  if (!hasOwn(UPSTREAMS, protocol)) fail("The channel names an unknown upstream protocol " + protocol, "invalid_config", 500);
   const gateway = ctx.upstream && ctx.upstream.kind === "new_api";
   // Another New API serves each protocol on this plugin's client routes.
-  if (gateway && GATEWAY_PROTOCOLS[protocol]) protocol = GATEWAY_PROTOCOLS[protocol];
+  if (gateway && own(GATEWAY_PROTOCOLS, protocol)) protocol = GATEWAY_PROTOCOLS[protocol];
   let model = perModel(config, "upstreamModels", names);
   if (!model) {
     if (mapped === CUSTOM_SLOT) {
@@ -2589,6 +2607,7 @@ function resolveChannel(ctx) {
   const headers = {};
   const key = ctx.apiKey || "";
   let auth = gateway ? "bearer" : typeof config.authType === "string" ? config.authType : "auto";
+  if (AUTH_TYPES.indexOf(auth) < 0) fail("The channel names an unknown key header type " + auth, "invalid_config", 500);
   if (auth === "auto") auth = upstream.auth;
   if (auth === "bearer") headers.Authorization = gateway && ctx.authHeader ? ctx.authHeader : "Bearer " + key;
   else if (auth === "x-goog-api-key" || auth === "api-key" || auth === "x-api-key") headers[auth] = key;
@@ -2610,7 +2629,8 @@ function resolveChannel(ctx) {
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
     perCallPrice: config.perCallPrice === true,
-    imageMode: IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
+    // Another New API takes System One images as assets, on its client routes.
+    imageMode: !gateway && IMAGE_MODES.indexOf(config.imageMode) >= 0 ? config.imageMode : "assets",
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };
@@ -2972,6 +2992,7 @@ function decodeAs(hint) {
   return guarded(function (ctx) {
     const body = clientBody(ctx.body);
     const protocol = hint === "decisions" ? clientProtocol("/v1/decisions", body.value) : hint;
+    if (hasProtoKey(body.value)) fail("The request cannot use __proto__ as a name");
     if (body.files.length && CLIENTS[protocol].family !== "systemone") fail("Only System One requests may upload files as multipart parts");
     const ir = CLIENTS[protocol].decode(body.value, body.files);
     return { kind: "submit", model: ir.model, action: protocol, requestBody: { protocol: protocol, body: body.value } };
@@ -2987,7 +3008,7 @@ function longContext(ctx) {
 // are called several times and must not keep state between calls.
 function prepare(ctx) {
   const request = ctx.requestBody;
-  if (!isObject(request) || !CLIENTS[request.protocol]) fail("The task request is not a Decision request", "invalid_request", 500);
+  if (!isObject(request) || typeof request.protocol !== "string" || !hasOwn(CLIENTS, request.protocol)) fail("The task request is not a Decision request", "invalid_request", 500);
   const ir = CLIENTS[request.protocol].decode(request.body, ctx.files || []);
   const route = resolveChannel(ctx);
   if (route.maxQuestions > 0 && ir.questions.length > route.maxQuestions)
@@ -3085,7 +3106,7 @@ export function extractUsage(ctx) {
 export function extractUsageOnComplete(ctx, result, data) {
   // An upstream without token usage is billed per successful request; the
   // protocol was recorded by parseSubmitResponse, never by the client.
-  const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
+  const upstream = isObject(data) ? own(UPSTREAMS, data.protocol) : null;
   if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
   // A reply without usage settles as one request: a per-request price bills

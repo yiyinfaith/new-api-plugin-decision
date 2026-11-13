@@ -20,6 +20,12 @@ translations:
 ### Fixed
 
 - With an image mode other than `assets`, uploaded images are no longer forwarded as multipart parts.
+- Question, asset and option names that match a built-in object member, such as `constructor`, work like any other name, and such values for a question type, image format or field type are refused.
+- A `__proto__` member anywhere in a request is refused with 400 instead of dropping that question or answer.
+- A Base URL that is only a host named like the path's first segment, such as `http://api`, keeps its host.
+- An `authType` outside its list is reported as a configuration error instead of sending no key.
+- Channels to another New API ignore `imageMode` and send images as `assets`.
+- With `state-image-url`, a single image is still sent as a list of parts.
 
 ### Migration
 

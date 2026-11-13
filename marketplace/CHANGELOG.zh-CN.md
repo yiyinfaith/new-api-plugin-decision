@@ -18,6 +18,12 @@ locale: "zh-CN"
 ### Fixed
 
 - 图片写法不是 `assets` 时，上传的图片不再作为 multipart 分段转发。
+- 问题名、资源名、选项名与 JavaScript 对象自带成员同名（如 `constructor`）时按普通名字处理；题型、图片格式、字段类型写成这类名字时明确拒绝。
+- 请求里任何位置用 `__proto__` 作键名时返回 400，不再让对应的问题或答案丢失。
+- Base URL 只有主机名、且与路径第一段同名时（如 `http://api`），不再截掉主机名。
+- `authType` 不是有效取值时报配置错误，不再静默不发密钥。
+- 上游是另一台 New API 时忽略 `imageMode`，图片按 `assets` 发送。
+- `state-image-url` 写法下只有一张图片时，`state` 仍发成数组。
 
 ### Migration
 

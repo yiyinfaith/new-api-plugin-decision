@@ -9,6 +9,21 @@ export function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+// A lookup table's own entry: a client value such as "constructor" never
+// reaches an inherited member.
+export function own(table, key) {
+  return typeof key === "string" && hasOwn(table, key) ? table[key] : undefined;
+}
+
+// A client JSON value that holds a __proto__ member: written into a plain
+// object, it would replace the prototype instead of adding the member.
+export function hasProtoKey(value) {
+  if (Array.isArray(value)) return value.some(hasProtoKey);
+  if (!isObject(value)) return false;
+  if (hasOwn(value, "__proto__")) return true;
+  return Object.keys(value).some((key) => hasProtoKey(value[key]));
+}
+
 // A client-facing failure. status is the HTTP status the gateway should use,
 // code a short machine-readable reason shown in the client's error format.
 export class DecisionError extends Error {

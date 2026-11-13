@@ -6,7 +6,7 @@
 // the model in the ai-model-id header, carries the same body without model.
 
 import { contentFromSystemOne, contentToSystemOne, contentToText, requireUniqueNames } from "./ir.js";
-import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, isStrictBase64, parseDataUrl, pick } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, isStrictBase64, own, parseDataUrl, pick } from "./util.js";
 
 const VC_FIELDS = ["model", "state", "questions"];
 const VC_IMPORTANT = ["providerOptions"];
@@ -50,7 +50,7 @@ function vcState(state) {
 function vcQuestion(id, question) {
   const where = 'Question "' + id + '"';
   if (!isObject(question)) fail(where + " must be an object");
-  const type = VC_TYPES[question.type];
+  const type = own(VC_TYPES, question.type);
   if (!type) fail(where + " has type " + question.type + "; use boolean, choice, score, or box", "unsupported_question_type");
   const out = { name: id, named: true, type: type, instructions: contentFromSystemOne(question.instructions, null), raw: question };
   const criteria = question.criteria;
@@ -188,7 +188,7 @@ function vcMeta(body, name) {
 function vcParseAnswer(answer, question, confidence, where) {
   if (!isObject(answer)) fail(where + " is missing", "upstream_invalid", 502);
   if (answer.type === "refusal") return { type: "refusal", raw: answer };
-  const type = VC_TYPES[answer.type];
+  const type = own(VC_TYPES, answer.type);
   if (type !== question.type) fail(where + " has type " + answer.type + " for a " + question.type + " question", "upstream_invalid", 502);
   const conf = isFiniteNumber(answer.confidence) ? answer.confidence : isFiniteNumber(confidence) ? confidence : undefined;
   if (type === "noul") {

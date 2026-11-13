@@ -10,7 +10,7 @@
 // Extraction IR: {kind: "extraction", source, model, state, fields, assets,
 //   referenceDate, provider, extras, passthrough, input, questions: []}
 
-import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64 } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64, own } from "./util.js";
 
 const EX_FIELDS = ["model", "state", "fields", "assets", "reference_date", "provider", "user", "session_id", "trace"];
 const COMMON = ["type", "instructions", "unit", "null_threshold"];
@@ -34,7 +34,7 @@ function validateField(name, field) {
   const where = 'Field "' + name + '"';
   if (!name.trim()) fail("Field names must contain text");
   if (!isObject(field)) fail(where + " must be an object");
-  const keys = EX_TYPES[field.type];
+  const keys = own(EX_TYPES, field.type);
   if (!keys) fail(where + " must have type " + Object.keys(EX_TYPES).join(", "), "unsupported_field_type");
   for (const key of Object.keys(field)) if (keys.indexOf(key) < 0) fail(where + " (" + field.type + ") does not accept " + key, "unknown_field");
   for (const key of REQUIRED[field.type] || []) if (field[key] === undefined) fail(where + " needs " + key);
@@ -162,7 +162,7 @@ function exInteger(value) {
 export function exParse(body, ir) {
   if (!isObject(body) || !isObject(body.answers)) fail("The upstream reply has no answers object", "upstream_invalid", 502);
   for (const name of Object.keys(ir.fields)) {
-    const answer = body.answers[name];
+    const answer = hasOwn(body.answers, name) ? body.answers[name] : null;
     if (!isObject(answer) || typeof answer.type !== "string" || !hasOwn(answer, "value")) fail('The answer to field "' + name + '" is missing', "upstream_invalid", 502);
   }
   let usage = null;
