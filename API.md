@@ -18,11 +18,11 @@
 
 ## 接口一览
 
-所有路径都是 `POST`，也都能加 `/decision` 前缀（如 `/decision/v1beta/decisions`）。
+所有路径都是 `POST`。**客户端优先直接使用下表中的原生路径，不要默认添加插件前缀**；仅当与 New API 主程序或其他插件发生实际路由冲突时，才在原路径前添加 `/decision`，例如 `/decision/v1/systemone`、`/decision/v1beta/decisions`。`/v1`、`/api` 这样的路径段不构成冲突。
 
 | 客户端协议 | 路径 | 请求体 | 回复 |
 | --- | --- | --- | --- |
-| TypeSafe System One | `/v1/systemone`、`/typesafe/v1/systemone`、`/decisions/v1/systemone`、`/providers/microsoft/v1/systemone` | JSON，或 TypeSafe SDK 的 multipart | System One |
+| TypeSafe System One | `/v1/systemone`（推荐）；兼容 `/decisions/v1/systemone`、`/providers/microsoft/v1/systemone` | JSON，或 TypeSafe SDK 的 multipart | System One |
 | OpenRouter | `/api/alpha/decisions`、`/api/v1/systemone` | JSON | System One + `id`、缓存 token |
 | ScaleDown | `/v1/scaledown` | JSON | System One |
 | OpenAI Decisions | `/v1/decisions`（`input` + `questions` 数组）、`/openai/v1/decisions` | JSON | OpenAI Decisions |
@@ -31,7 +31,7 @@
 | Vercel Evaluation | `/v1/evaluate` | JSON | AI SDK 评估格式 |
 | Databricks ai-decide | `/api/2.0/ai-functions/ai-decide` | JSON（加 `model`） | Databricks ai-decide |
 
-- `/typesafe/...` 在装了官方 TypeSafe 插件时归它所有；`/v1/systemone` 两个插件共用，由渠道绑定的插件执行。
+- Decision 独立支持 System One，不要求安装其他插件。如果同时安装官方 TypeSafe 插件，`/v1/systemone` 可能成为共享入口：优先检查模型和渠道绑定，必要时使用 `/decision/v1/systemone` 精确进入 Decision。
 - 请求都是同步的：一次请求一次回复，没有任务 ID 要轮询。
 - 不会占用 `/v1/tasks`、`/v1/chat/completions` 等其它接口。
 
@@ -290,7 +290,7 @@ Vercel AI Gateway 旧接口 `/v1/evaluate`（已被 `/v1/decisions` 取代但仍
 | `vercel_sdk` | `{state, questions}`，模型在 `ai-model-id` 头，另加 `ai-evaluation-model-specification-version: 4` 等头 | Bearer | 同上 |
 | `databricks` | `{state, questions, options?}`，不带模型；每题都有 `instructions`（缺省时用问题名）；noul 的 null 说明省略 | Bearer | 无，按次计费（`requests`） |
 
-上游是另一台装了本插件的 New API 时，`vercel_sdk` 改发对方的 `/decision/v1/evaluate`（带 `model`），`databricks` 发对方的 `/decision/api/2.0/ai-functions/ai-decide` 并带上 `model`。
+上游是另一台装了本插件的 New API 时，插件内部会使用对方的专属入口确保命中 Decision：`vercel_sdk` 使用 `/decision/v1/evaluate`（带 `model`），`databricks` 使用 `/decision/api/2.0/ai-functions/ai-decide` 并带上 `model`。这不改变普通客户端默认直接使用原生路径的建议。
 
 上游回复如果包在 `{result, success}` 里（Cloudflare Workers AI），会先拆开。回复是 200 但带 `error` 对象时按上游错误处理。
 
@@ -446,7 +446,7 @@ OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回�
 | OpenAI `/v1/decisions` | 官方 | OpenAI | `openai` |
 | Google `generativelanguage.googleapis.com/v1beta/decisions` | 官方 Beta | Gemini | `gemini` |
 | Vercel `/v1/decisions` | 官方 | OpenAI | `openai`，Base URL `https://ai-gateway.vercel.sh` |
-| Vercel `/typesafe/v1/systemone` | 官方 | System One | `systemone`，路径 `/typesafe/v1/systemone` |
+| Vercel System One 兼容入口 | 官方 | System One | `systemone`，上游请求路径按 Vercel 官方文档配置 |
 | Vercel `/v1/evaluate` | 官方，已弃用仍可用 | AI SDK 评估格式 | `vercel` |
 | Vercel `/v4/ai/evaluation-model` | SDK 内部接口 | AI SDK 评估格式 | `vercel_sdk` |
 | OpenRouter `/api/alpha/decisions`、`/api/v1/systemone` | 官方（alpha） | System One + 扩展 | `openrouter`，Base URL `https://openrouter.ai` |
@@ -459,7 +459,7 @@ OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回�
 | SubQ Snap `/v1/systemone` | 官方 | System One，图片放顶层 `images` | `systemone`，只用文本 |
 | Inception Mercury Decide `/v1/decisions` | 官方 | System One 形状 + `extract` | `systemone` + 路径 `/v1/decisions`；`extract` 只能同族直通 |
 | Parallel `/v1/decisions` | 官方 | 无 `model` 字段，按次收费 | 未专门适配；按次价格用 `u("requests") * 0.001` |
-| Databricks System One 路由 | 官方 | System One | `systemone`，路径 `/ai-gateway/typesafe/v1/systemone` |
+| Databricks System One 兼容路由 | 官方 | System One | `systemone`，上游请求路径按 Databricks 官方文档配置 |
 | Databricks `/api/2.0/ai-functions/ai-decide` | 官方 Beta | System One 形状，无模型、无用量、无图片 | `databricks`，Base URL 填工作区地址；按次计费；只用模拟上游测过 |
 | ScaleDown `/v1/scaledown` | 官方 | System One + 文档 state | 客户端路由支持；上游用 `systemone` + 路径 `/v1/scaledown`（只发文本） |
 | LiteLLM `/v1/systemone`、`/v1/decisions` | 官方 | System One / OpenAI | `systemone` 或 `openai` |
