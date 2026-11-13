@@ -8,6 +8,8 @@
 // An upstream that reports no tokens (Databricks ai-decide) reports requests
 // only: token fields are never made up, so an expression that reads them
 // fails and the request is refused instead of billed as free.
+// upstream_cost is the USD amount a relay reported for the request, and is
+// present only when it reported one; it lets one expression bill cost-plus.
 // Special profiles (meta.usageProfiles) exist only where a model is billed
 // differently for chat and for decisions: gpt-6-luna. Adding one is a new
 // entry in SPECIAL_BILLING.
@@ -18,17 +20,24 @@ function tokenField(en, zh) {
   return { type: "number", unit: "token", description: { en: en, zh: zh } };
 }
 
+const COST_FIELD = {
+  type: "number",
+  unit: "credit",
+  description: { en: "USD the upstream reported for the request (OpenRouter, ScaleDown, Eden AI, OpenCode); absent when it reports none", zh: "上游回复里报告的本次费用（美元，OpenRouter、ScaleDown、Eden AI、OpenCode 等）；上游不报告时没有这一项" },
+};
+
 export const DEFAULT_SCHEMA = {
   input_tokens: tokenField("Input token unit price", "输入 token 单价"),
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   output_tokens: tokenField("Output token unit price", "输出 token 单价"),
   requests: { type: "number", unit: "count", description: { en: "Successful requests (always 1); the only fact of upstreams without token usage", zh: "成功请求数（恒为 1）；无 token 用量的上游只报告这一项" } },
+  upstream_cost: COST_FIELD,
 };
 
 export const DEFAULT_EXAMPLES = [
-  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
-  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
+  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1, upstream_cost: 0.00004 } },
+  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1, upstream_cost: 0.00026 } },
 ];
 
 // The facts of an upstream that reports no token usage.
@@ -43,6 +52,7 @@ const LUNA_SCHEMA = {
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   long_context: { type: "boolean", description: { en: "Input longer than 272K tokens", zh: "输入超过 272K token" } },
+  upstream_cost: COST_FIELD,
 };
 
 export const SPECIAL_BILLING = [
@@ -50,9 +60,9 @@ export const SPECIAL_BILLING = [
     models: ["gpt-6-luna", "openai/gpt-6-luna", "openai/gpt-6-luna-decisions", "gpt-6-luna-decisions"],
     schema: LUNA_SCHEMA,
     examples: [
-      { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: false } },
-      { label: "8k input · 6k cached", facts: { input_tokens: 2000, cache_read_tokens: 6000, cache_write_tokens: 0, long_context: false } },
-      { label: "300k input", facts: { input_tokens: 300000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: true } },
+      { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: false, upstream_cost: 0.0001 } },
+      { label: "8k input · 6k cached", facts: { input_tokens: 2000, cache_read_tokens: 6000, cache_write_tokens: 0, long_context: false, upstream_cost: 0.00026 } },
+      { label: "300k input", facts: { input_tokens: 300000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: true, upstream_cost: 0.06 } },
     ],
     facts: function (usage) {
       return {
@@ -93,8 +103,11 @@ export function usageFacts(usage, upstreamModel, model) {
   const cacheWrite = Math.min(clampTokens(usage.cacheWrite), input - cacheRead);
   const normalized = { input: input, cacheRead: cacheRead, cacheWrite: cacheWrite, billedInput: input - cacheRead - cacheWrite, output: clampTokens(usage.output) };
   const profile = billingProfile(upstreamModel, model);
-  if (profile) return profile.facts(normalized);
-  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
+  const facts = profile
+    ? profile.facts(normalized)
+    : { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
+  if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0) facts.upstream_cost = usage.cost;
+  return facts;
 }
 
 // ---- reservation ------------------------------------------------------------

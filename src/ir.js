@@ -30,8 +30,10 @@
 //    probabilities: {key: p} (choice) | number[] (score, by level), confidence,
 //    score, box: {top, bottom, left, right}, raw}
 // Usage IR
-//   {input, cacheRead, cacheWrite, output, reasoning, total}; input includes the
-//   cached and cache-write tokens, as OpenAI reports it.
+//   {input, cacheRead, cacheWrite, output, reasoning, total, cost?}; input
+//   includes the cached and cache-write tokens, as OpenAI reports it. cost is
+//   the USD amount a relay reports for the request (OpenRouter, ScaleDown,
+//   OpenCode usage.cost; Eden AI's top-level cost), when it reports one.
 
 import { DecisionError, fail, forEachString, isObject } from "./util.js";
 

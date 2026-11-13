@@ -5,7 +5,7 @@
 // the same body. Bifrost reports usage as prompt_tokens/completion_tokens.
 
 import { assignQuestionNames, contentToText, isObjectContent, requireUniqueNames } from "./ir.js";
-import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, parseDataUrl, pick } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isHttpUrl, isObject, parseDataUrl, pick, reportedCost } from "./util.js";
 
 const OA_FIELDS = ["model", "input", "questions"];
 const OA_IGNORABLE = ["prompt_cache_key", "prompt_cache_options", "safety_identifier"];
@@ -300,6 +300,7 @@ export function oaParseUsage(usage) {
     output: output,
     reasoning: oaInteger(outputDetails.reasoning_tokens) || 0,
     total: oaInteger(usage.total_tokens) !== undefined ? usage.total_tokens : input + output,
+    cost: reportedCost(usage.cost),
   };
 }
 

@@ -48,12 +48,13 @@ test("vendor usage shapes", () => {
   assert.ok(vercel.settled.input_tokens > 0);
 });
 
-test("a reply without usage keeps the reservation instead of billing zero", () => {
+test("a reply without usage settles as one request, never as zero tokens", () => {
   for (const protocol of ["systemone", "openai", "gemini", "vercel"]) {
     const result = run(S1.path, S1.body, { config: { protocol }, mapping: { "jev-latest": "missing-usage" } });
     assert.ok(result.reply, protocol);
-    assert.equal(result.settled, undefined, protocol);
-    assert.match(String(result.settleError), /no token usage/, protocol);
+    // No token facts: New API settles a token expression on the reservation's,
+    // and a per-request price on this one request.
+    assert.deepEqual(result.settled, { requests: 1 }, protocol);
   }
 });
 
@@ -78,5 +79,39 @@ test("settled facts are bounded integers", () => {
   const result = settleWith("jev-latest", { input_tokens: 2147483647, output_tokens: 1 });
   assert.equal(result.settled.input_tokens, 2147483647);
   const negative = settleWith("jev-latest", { input_tokens: -5, output_tokens: 1 });
-  assert.equal(negative.settled, undefined);
+  assert.deepEqual(negative.settled, { requests: 1 }, "invalid usage is not read as tokens");
+});
+
+test("upstream_cost: a relay's reported cost is billed, never shown to the client", () => {
+  // OpenRouter-shaped System One reply with usage.cost (the mock reports 0.0001).
+  const openrouter = run(S1.path, S1.body, { config: { protocol: "openrouter" } });
+  assert.equal(openrouter.settled.upstream_cost, 0.0001);
+  assert.equal(openrouter.reserved.upstream_cost, undefined, "unknown before the reply");
+  assert.ok(!JSON.stringify(openrouter.reply).includes("0.0001"));
+  // Eden AI: cost at the top level, passed through to a System One client.
+  const eden = { model: "typesafe/jev-latest", answers: { wants_refund: { type: "noul", noul: 0.9 }, request: { type: "choice", choice: "refund", confidence: 1, probabilities: { refund: 1 } }, severity: { type: "score", score: 1, confidence: 1, legend: {}, probabilities: {} } }, usage: { input_tokens: 120, output_tokens: 0 }, cost: 0.0000126, provider: "typesafe", id: "edn-1" };
+  const viaEden = run(S1.path, S1.body, { upstream: () => ({ status: 200, body: eden }) });
+  assert.equal(viaEden.settled.upstream_cost, 0.0000126);
+  assert.equal(viaEden.reply.cost, undefined);
+  assert.equal(viaEden.reply.provider, "typesafe");
+  // OpenAI-shaped relay with usage.cost, on the gpt-6-luna profile.
+  const luna = settleWith("gpt-6-luna", { input_tokens: 1000, output_tokens: 0, cost: 0.0001 });
+  assert.equal(luna.settled.upstream_cost, 0.0001);
+  assert.ok(!("cost" in luna.reply.usage));
+  // No cost reported: no fact, so an expression that needs one falls back or fails.
+  const plain = run(S1.path, S1.body);
+  assert.equal("upstream_cost" in plain.settled, false);
+  const negative = settleWith("jev-latest", { input_tokens: 10, output_tokens: 0, cost: -1 });
+  assert.equal("upstream_cost" in negative.settled, false);
+});
+
+test("perCallPrice: a channel can accept fixed per-call model prices", () => {
+  const refused = run(S1.path, S1.body);
+  assert.throws(() => plugin.extractUsage(Object.assign({}, refused.ctx, { usagePurpose: "billing_ratios" })), /model_price_error/);
+  const accepted = run(S1.path, S1.body, { config: { perCallPrice: true } });
+  assert.equal(plugin.extractUsage(Object.assign({}, accepted.ctx, { usagePurpose: "billing_ratios" })), null);
+  // Without usage in the reply the request still completes.
+  const noUsage = run(S1.path, S1.body, { config: { perCallPrice: true }, mapping: { "jev-latest": "missing-usage" } });
+  assert.ok(noUsage.reply.answers);
+  assert.equal(plugin.meta.channelConfig.properties.perCallPrice.default, false);
 });

@@ -108,7 +108,7 @@ test("a Databricks client on a token upstream is billed by tokens", () => {
   // The client cannot claim per-request billing: the protocol in the task
   // data is the one the plugin sent to.
   assert.equal(result.parsed.taskData.protocol, "systemone");
-  assert.throws(() => plugin.extractUsageOnComplete({ model: "jev-latest" }, {}, { response: {}, usage: null, protocol: "systemone" }), /no token usage/);
+  assert.deepEqual(plugin.extractUsageOnComplete({ model: "jev-latest" }, {}, { response: {}, usage: null, protocol: "systemone" }), { requests: 1 });
 });
 
 test("token upstreams still refuse per-call and ratio prices, naming the right fix", () => {

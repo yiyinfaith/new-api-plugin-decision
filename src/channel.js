@@ -82,6 +82,15 @@ export const CHANNEL_CONFIG = {
       description: { en: "For upstreams that require instructions on every question", zh: "用于要求每题都有指令的上游" },
       default: false,
     },
+    perCallPrice: {
+      type: "boolean",
+      title: { en: "Accept a fixed per-call model price", zh: "允许模型固定按次价格" },
+      description: {
+        en: "Lets the models on this channel use New API's fixed per-call price, with or without usage in the reply. New API charges a ratio-priced model half its ratio in USD per call, so give these models fixed prices, not ratios",
+        zh: "允许本渠道的模型使用 New API 的固定按次价格，上游回复有没有用量都能正常调用。New API 对倍率定价的模型按每次「倍率 ÷ 2」美元扣费，所以这些模型要设固定价格，不要设倍率",
+      },
+      default: false,
+    },
     maxQuestions: {
       type: "integer",
       title: { en: "Questions per request", zh: "单次问题数上限" },
@@ -184,6 +193,7 @@ export function resolveChannel(ctx) {
     maxQuestions: maxQuestions,
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
+    perCallPrice: config.perCallPrice === true,
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };

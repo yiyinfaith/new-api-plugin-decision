@@ -108,6 +108,11 @@ function pick(source, keys) {
   return result;
 }
 
+// A USD amount a relay reports for a request: a finite, non-negative number.
+function reportedCost(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 // ---- src/ir.js ----
 // Decision IR: the protocol-neutral form every decoder produces and every
 // encoder consumes.
@@ -141,8 +146,10 @@ function pick(source, keys) {
 //    probabilities: {key: p} (choice) | number[] (score, by level), confidence,
 //    score, box: {top, bottom, left, right}, raw}
 // Usage IR
-//   {input, cacheRead, cacheWrite, output, reasoning, total}; input includes the
-//   cached and cache-write tokens, as OpenAI reports it.
+//   {input, cacheRead, cacheWrite, output, reasoning, total, cost?}; input
+//   includes the cached and cache-write tokens, as OpenAI reports it. cost is
+//   the USD amount a relay reports for the request (OpenRouter, ScaleDown,
+//   OpenCode usage.cost; Eden AI's top-level cost), when it reports one.
 
 
 const QUESTION_TYPES = ["noul", "choice", "score", "box"];
@@ -626,14 +633,17 @@ function s1Integer(value) {
   return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function s1ParseUsage(usage) {
+function s1ParseUsage(usage, topLevelCost) {
   if (!isObject(usage)) return null;
   const input = s1Integer(usage.input_tokens);
   if (input === undefined) return null;
   const details = isObject(usage.input_tokens_details) ? usage.input_tokens_details : {};
   const cached = s1Integer(details.cached_tokens) || s1Integer(usage.cached_input_tokens) || 0;
   const output = s1Integer(usage.output_tokens) || 0;
-  return { input: input, cacheRead: Math.min(cached, input), cacheWrite: 0, output: output, reasoning: 0, total: input + output };
+  const result = { input: input, cacheRead: Math.min(cached, input), cacheWrite: 0, output: output, reasoning: 0, total: input + output };
+  const cost = reportedCost(usage.cost) !== undefined ? reportedCost(usage.cost) : reportedCost(topLevelCost);
+  if (cost !== undefined) result.cost = cost;
+  return result;
 }
 
 function s1Parse(body, ir) {
@@ -642,7 +652,7 @@ function s1Parse(body, ir) {
     const where = 'The answer to "' + question.name + '"';
     return s1ParseAnswer(hasOwn(body.answers, question.name) ? body.answers[question.name] : null, question, where);
   });
-  return { model: typeof body.model === "string" ? body.model : "", answers: answers, usage: s1ParseUsage(body.usage) };
+  return { model: typeof body.model === "string" ? body.model : "", answers: answers, usage: s1ParseUsage(body.usage, body.cost) };
 }
 
 // ---- client renderer --------------------------------------------------------
@@ -1225,6 +1235,7 @@ function oaParseUsage(usage) {
     output: output,
     reasoning: oaInteger(outputDetails.reasoning_tokens) || 0,
     total: oaInteger(usage.total_tokens) !== undefined ? usage.total_tokens : input + output,
+    cost: reportedCost(usage.cost),
   };
 }
 
@@ -2053,6 +2064,8 @@ function passthroughReply(clientId, upstreamId, result) {
   if (clientId !== upstreamId || !hasOwn(REPLY_USAGE, clientId) || !isObject(result.reply)) return null;
   const reply = {};
   for (const key of Object.keys(result.reply)) {
+    // Eden AI reports its cost at the top level.
+    if (key === "cost") continue;
     if (key !== "usage") reply[key] = result.reply[key];
     else if (result.usage && REPLY_USAGE[clientId]) reply.usage = REPLY_USAGE[clientId](result.usage);
   }
@@ -2140,6 +2153,15 @@ const CHANNEL_CONFIG = {
       type: "boolean",
       title: { en: "Ask questions without instructions by their name", zh: "缺少指令时用问题名补上" },
       description: { en: "For upstreams that require instructions on every question", zh: "用于要求每题都有指令的上游" },
+      default: false,
+    },
+    perCallPrice: {
+      type: "boolean",
+      title: { en: "Accept a fixed per-call model price", zh: "允许模型固定按次价格" },
+      description: {
+        en: "Lets the models on this channel use New API's fixed per-call price, with or without usage in the reply. New API charges a ratio-priced model half its ratio in USD per call, so give these models fixed prices, not ratios",
+        zh: "允许本渠道的模型使用 New API 的固定按次价格，上游回复有没有用量都能正常调用。New API 对倍率定价的模型按每次「倍率 ÷ 2」美元扣费，所以这些模型要设固定价格，不要设倍率",
+      },
       default: false,
     },
     maxQuestions: {
@@ -2244,6 +2266,7 @@ function resolveChannel(ctx) {
     maxQuestions: maxQuestions,
     reserveTokens: reserveTokens,
     fillInstructions: config.fillInstructions === true,
+    perCallPrice: config.perCallPrice === true,
     // Another New API routes even an ai-decide request by its model.
     keepModel: !!gateway,
   };
@@ -2349,6 +2372,8 @@ const MODELS = MODEL_GROUPS.reduce((all, group) => all.concat(group.models), [])
 // An upstream that reports no tokens (Databricks ai-decide) reports requests
 // only: token fields are never made up, so an expression that reads them
 // fails and the request is refused instead of billed as free.
+// upstream_cost is the USD amount a relay reported for the request, and is
+// present only when it reported one; it lets one expression bill cost-plus.
 // Special profiles (meta.usageProfiles) exist only where a model is billed
 // differently for chat and for decisions: gpt-6-luna. Adding one is a new
 // entry in SPECIAL_BILLING.
@@ -2358,17 +2383,24 @@ function tokenField(en, zh) {
   return { type: "number", unit: "token", description: { en: en, zh: zh } };
 }
 
+const COST_FIELD = {
+  type: "number",
+  unit: "credit",
+  description: { en: "USD the upstream reported for the request (OpenRouter, ScaleDown, Eden AI, OpenCode); absent when it reports none", zh: "上游回复里报告的本次费用（美元，OpenRouter、ScaleDown、Eden AI、OpenCode 等）；上游不报告时没有这一项" },
+};
+
 const DEFAULT_SCHEMA = {
   input_tokens: tokenField("Input token unit price", "输入 token 单价"),
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   output_tokens: tokenField("Output token unit price", "输出 token 单价"),
   requests: { type: "number", unit: "count", description: { en: "Successful requests (always 1); the only fact of upstreams without token usage", zh: "成功请求数（恒为 1）；无 token 用量的上游只报告这一项" } },
+  upstream_cost: COST_FIELD,
 };
 
 const DEFAULT_EXAMPLES = [
-  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
-  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1 } },
+  { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, requests: 1, upstream_cost: 0.00004 } },
+  { label: "8k input · 2k cached", facts: { input_tokens: 6000, cache_read_tokens: 2000, cache_write_tokens: 0, output_tokens: 0, requests: 1, upstream_cost: 0.00026 } },
 ];
 
 // The facts of an upstream that reports no token usage.
@@ -2383,6 +2415,7 @@ const LUNA_SCHEMA = {
   cache_read_tokens: tokenField("Cached input token unit price", "缓存读取 token 单价"),
   cache_write_tokens: tokenField("Cache write token unit price", "缓存写入 token 单价"),
   long_context: { type: "boolean", description: { en: "Input longer than 272K tokens", zh: "输入超过 272K token" } },
+  upstream_cost: COST_FIELD,
 };
 
 const SPECIAL_BILLING = [
@@ -2390,9 +2423,9 @@ const SPECIAL_BILLING = [
     models: ["gpt-6-luna", "openai/gpt-6-luna", "openai/gpt-6-luna-decisions", "gpt-6-luna-decisions"],
     schema: LUNA_SCHEMA,
     examples: [
-      { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: false } },
-      { label: "8k input · 6k cached", facts: { input_tokens: 2000, cache_read_tokens: 6000, cache_write_tokens: 0, long_context: false } },
-      { label: "300k input", facts: { input_tokens: 300000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: true } },
+      { label: "1k input", facts: { input_tokens: 1000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: false, upstream_cost: 0.0001 } },
+      { label: "8k input · 6k cached", facts: { input_tokens: 2000, cache_read_tokens: 6000, cache_write_tokens: 0, long_context: false, upstream_cost: 0.00026 } },
+      { label: "300k input", facts: { input_tokens: 300000, cache_read_tokens: 0, cache_write_tokens: 0, long_context: true, upstream_cost: 0.06 } },
     ],
     facts: function (usage) {
       return {
@@ -2433,8 +2466,11 @@ function usageFacts(usage, upstreamModel, model) {
   const cacheWrite = Math.min(clampTokens(usage.cacheWrite), input - cacheRead);
   const normalized = { input: input, cacheRead: cacheRead, cacheWrite: cacheWrite, billedInput: input - cacheRead - cacheWrite, output: clampTokens(usage.output) };
   const profile = billingProfile(upstreamModel, model);
-  if (profile) return profile.facts(normalized);
-  return { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
+  const facts = profile
+    ? profile.facts(normalized)
+    : { input_tokens: normalized.billedInput, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, output_tokens: normalized.output, requests: 1 };
+  if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0) facts.upstream_cost = usage.cost;
+  return facts;
 }
 
 // ---- reservation ------------------------------------------------------------
@@ -2498,7 +2534,7 @@ function usageFromTaskData(data) {
 // Response: upstream reply -> upstream parser -> answers/usage IR -> client renderer
 
 
-const VERSION = "1.0.2";
+const VERSION = "1.0.3";
 
 const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context";
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
@@ -2669,8 +2705,9 @@ function submitResult(ctx, response) {
 // The host asks for billing ratios only on its per-call path, taken when the
 // model has no task expression: a fixed per-call price, or a ratio, which the
 // host turns into a flat charge of half the ratio in dollars per request and
-// never settles by tokens. Neither bills tokens, so a token upstream refuses
-// it; an upstream without token usage takes the fixed per-call price as is.
+// never settles by tokens. The hook cannot tell the two apart, so a token
+// upstream refuses the path unless the channel accepts fixed per-call prices;
+// an upstream without token usage takes the fixed per-call price as is.
 function perCallRefusal(ctx) {
   const model = ctx.model;
   if (billingProfile(ctx.upstreamModel || model, model))
@@ -2680,7 +2717,7 @@ function perCallRefusal(ctx) {
     );
   return (
     "Model " + model + " is priced per call or by ratio, which cannot bill decision tokens. Set its model price to a task expression that reads the token usage, " +
-    'such as tier("base", u("input_tokens") * 0.042 / 1000000)'
+    'such as tier("base", u("input_tokens") * 0.042 / 1000000), or turn on the channel\'s perCallPrice to accept a fixed per-call price'
   );
 }
 
@@ -2688,7 +2725,7 @@ export function extractUsage(ctx) {
   return run(function () {
     const prepared = prepare(ctx);
     if (ctx.usagePurpose === "billing_ratios") {
-      if (prepared.route.upstream.noUsage) return null;
+      if (prepared.route.upstream.noUsage || prepared.route.perCallPrice) return null;
       fail(perCallRefusal(ctx), "model_price_error");
     }
     return reservationFacts(prepared.ir, ctx.files || [], prepared.route, longContext(ctx), ctx.upstreamModel || ctx.model, ctx.model);
@@ -2701,9 +2738,10 @@ export function extractUsageOnComplete(ctx, result, data) {
   const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
   if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
-  // Throwing keeps the reservation and makes the host log invalid usage; a
-  // reply without usage is never billed as free.
-  if (!usage) throw new Error("The upstream reply has no token usage; the reserved quota is kept");
+  // A reply without usage settles as one request: a per-request price bills
+  // exactly, and a token expression finds no token facts of the reply, so the
+  // host settles on the reservation's. It is never billed as free.
+  if (!usage) return requestFacts();
   return usageFacts(usage, ctx.upstreamModel || ctx.model, ctx.model);
 }
 

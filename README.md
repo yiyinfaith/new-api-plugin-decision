@@ -8,7 +8,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 - **按真实用量计费**：输入、缓存读取、缓存写入、输出分开上报。普通模型直接用 New API 的模型级任务表达式；只有 `gpt-6-luna` 要另配插件覆盖价，和它的普通聊天计费互不影响。不报用量的 Databricks ai-decide 按次计费。
 - **完整保留官方 TypeSafe 插件的能力**：四种问题类型、图片、SDK 的 multipart 上传、长上下文、错误格式、JSON 键顺序。
 
-当前版本：v1.0.2，渠道配置（`channelConfig`）需要 rc.50 及以上。
+当前版本：v1.0.3，渠道配置（`channelConfig`）需要 rc.50 及以上。
 
 **完整的接口字段、转换规则、兼容性矩阵和报错格式见 [API.md](API.md)。**
 
@@ -35,6 +35,7 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 | 按模型指定上游协议 `modelProtocols` | `{"模型名": "协议"}`，覆盖渠道协议 |
 | 按模型指定上游路径 `modelPaths` | `{"模型名": "/路径"}`，覆盖渠道路径 |
 | 按模型指定上游模型 ID `upstreamModels` | `{"模型名": "上游 ID"}`，覆盖模型重定向后的名字 |
+| 允许模型固定按次价格 `perCallPrice` | 默认关。打开后，本渠道的模型可以用 New API 的固定价格（按次计费），上游回复有没有用量、有没有费用都能正常调用，见[按次计费](#按次计费模型固定价格) |
 | 缺少指令时用问题名补上 `fillInstructions` | 默认关。发往 System One 族上游时，没写 `instructions` 的问题用问题名补上；OpenCSG、Telnyx、Requesty 等要求每题都有指令的上游需要打开 |
 | 单次问题数上限 `maxQuestions` | 0 = 协议上限（OpenAI 400，其余不限）；超出直接报错，不拆分 |
 | 最多预扣输入 token `reserveTokens` | 0 = 协议上下文上限；见[预扣](#预扣与结算) |
@@ -273,17 +274,19 @@ curl https://你的域名/api/2.0/ai-functions/ai-decide -H "Authorization: Bear
 
 New API 给插件请求定价时按下面的顺序找，找到就停（rc.50 实测）：
 
-1. **插件覆盖价** `decision::<模型>`：只在模型同时用于普通聊天时需要，目前只有 `gpt-6-luna`，见[下文](#gpt-6-luna聊天和-decisions-分开计费)。
+1. **插件覆盖价** `decision::<模型>`：只在两种情况下需要：
+   - 模型同时用于普通聊天，目前只有 `gpt-6-luna`，见[下文](#gpt-6-luna聊天和-decisions-分开计费)。
+   - 模型也被另一个已安装的任务插件声明（如官方 TypeSafe 插件声明了 `jev-latest` 等 Jev 模型）。这时模型级表达式只能读两个插件都有的字段，New API 会拒绝保存读了 `cache_read_tokens` 的模型级表达式；要用完整表达式，就配在 `decision::jev-latest` 上，模型级价格留给另一个插件。
 2. **客户端模型名的模型级任务表达式**：计费方式选「表达式」，表达式里用 `u("…")` 读插件上报的用量，结果单位是美元/次。
 3. **重定向后名字的模型级任务表达式**：如所有重定向到 `decision-custom` 的名字共用它的表达式，`my-jev → jev-latest` 共用 `jev-latest` 的表达式。
-4. 都没有时，New API 走按次路径，用模型的**固定价格**（按次计费）或**倍率**。插件只在上游不报用量（Databricks ai-decide）时接受固定价格，其余情况都拒绝：返回 400，不请求上游、不扣费。
+4. 都没有时，New API 走按次路径，用模型的**固定价格**（按次计费）或**倍率**。插件在渠道打开了 `perCallPrice`、或上游不报用量（Databricks ai-decide）时接受这条路径，其余情况都拒绝：返回 400，不请求上游、不扣费。
 
 | 价格配置 | 用于决策请求 |
 | --- | --- |
 | 模型级任务表达式（带 `u()`） | ✓ 推荐，Jev、Gemini 和其它模型都用这种 |
 | 插件覆盖价 `decision::模型` | ✓ 只有聊天、决策共用模型名时需要（`gpt-6-luna`） |
 | 倍率（按量计费） | ✗ 插件拒绝，原因见下 |
-| 固定价格（按次计费） | 只用于 Databricks ai-decide；其它上游插件拒绝 |
+| 固定价格（按次计费） | ✓ 渠道打开 `perCallPrice` 后可用；Databricks ai-decide 不用打开 |
 | 聊天表达式（用 `p`、`c` 等） | ✗ New API 拒绝 |
 
 ### 普通倍率为什么不能用于决策请求
@@ -324,8 +327,11 @@ tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01) / 100000
 | `u("cache_write_tokens")` | 缓存写入 token |
 | `u("output_tokens")` | 输出 token |
 | `u("requests")` | 成功请求数，恒为 1；不报用量的上游只有这个字段 |
+| `u("upstream_cost")` | 上游回复里报告的本次费用（美元）。只有 OpenRouter、ScaleDown、Eden AI、OpenCode 这类会报告费用的上游才有，见[按上游实际费用计费](#按上游实际费用计费) |
 
 三个输入字段互不重叠，相加等于上游报告的总输入。用量来自上游回复，客户端在请求里写的用量字段会被拒绝。
+
+**缓存 token 别漏收**：大多数决策模型的缓存读取和普通输入同价，但插件把缓存读取单独放在 `cache_read_tokens` 里。表达式只写 `u("input_tokens")` 时，上游报告的缓存 token 就不收费了，所以下面的模板把三个输入字段都按输入价计费。
 
 示例价格如下，每百万 token，美元，2026-11-12 核对。以官网为准，价格会变。
 
@@ -345,7 +351,7 @@ tier("base", u("input_tokens") * 0.042 / 1000000 + u("cache_read_tokens") * 0.04
 Gemini Decision 1 的模型级表达式（`gemini-decision-1` 不用于聊天，不需要插件覆盖价）：
 
 ```text
-tier("base", u("input_tokens") * 0.10 / 1000000)
+tier("base", u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.10 / 1000000 + u("cache_write_tokens") * 0.10 / 1000000)
 ```
 
 按次收费的模型（如 Parallel 每次 0.001 美元）：
@@ -353,6 +359,62 @@ tier("base", u("input_tokens") * 0.10 / 1000000)
 ```text
 u("requests") * 0.001
 ```
+
+### 按次计费（模型固定价格）
+
+想按次收费时有两种做法，上游回复里有没有用量、有没有费用都能正常调用：
+
+- **模型固定价格**：「模型价格」里把模型设为按次计费并填价格，再在渠道插件配置里打开 `perCallPrice`（允许模型固定按次价格）。
+- **任务表达式** `u("requests") * 单价`：不用打开开关，名字自己的表达式优先于重定向目标的。
+
+`perCallPrice` 默认关，因为插件分不清 New API 走的是固定价格还是倍率（宿主没有把这个信息交给插件），而倍率会按每次「倍率 ÷ 2」美元扣费。打开后，本渠道的模型要设固定价格，不要只设倍率；按 token 计费的模型放在没打开开关的渠道，或给它们配任务表达式（表达式优先于固定价格）。
+
+### 常见模型价格模板
+
+把表达式里的 `P` 换成下表的输入价（美元/百万 token），在「模型价格」里给对应模型逐个填入：
+
+```text
+tier("base", u("input_tokens") * P / 1000000 + u("cache_read_tokens") * P / 1000000 + u("cache_write_tokens") * P / 1000000)
+```
+
+价格取自厂商官网和 OpenRouter 实时模型目录，2026-11-13 核对；以官网为准，价格会变。下表的模型都不收输出费。
+
+| `P` | 模型 |
+| --- | --- |
+| 0.01 | `pplx-decider-flash-v1.3`、`pplx-decider-flash-v1.2`、`pplx-decider-flash-latest`、`perplexity/pplx-decider-flash-v1.3`、`perplexity/pplx-decider-flash-v1.2`、`perplexity/pplx-decider-flash-latest`、`~perplexity/pplx-decider-flash-latest`；`span-02`、`respan/span-02`；`baseten/joey-1`、`decision-models/baseten-joey-2b-latest` |
+| 0.019 | `cloudflare/clef-flash`（OpenRouter） |
+| 0.02 | `pplx-decider-v1.3`、`pplx-decider-v1.2`、`pplx-decider-latest`、`perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-v1.2`、`perplexity/pplx-decider-latest`、`~perplexity/pplx-decider-latest`；`d1.1`、`liquid/d1`、`liquid/d1.1`、`~liquid/d1-latest`；`respan/span-01` |
+| 0.035 | `baseten/elephant-1`、`decision-models/baseten-elephant-9b-latest` |
+| 0.04 | `nimble-latest`、`nimble-v4.1-max`、`nimble-v4-max`；`scaledown/classify-1`、`classify-1`、`classify`；`drex-v1.5`、`nace-ai/drex-v1.5` |
+| 0.042 | Jev 全部写法（`jev-1.14.0`、`jev-1.13.0`、`jev-latest`、`jev-preview`、`typesafe/…`、`typesafe-ai/…`、`~typesafe/jev-latest`）；`microsoft-decision-1`、`microsoft/microsoft-decision-1`；`d1-ultra`、`liquid/d1-ultra`、`~liquid/d1-ultra-latest`；`jaredpalmer/kev-4b`；`togethercomputer/tev1-4b-experimental` |
+| 0.05 | `upstage/solar-decide`、`upstage/solar-decide-flash`（OpenRouter；Upstage 官网 `solar-decide` 为 0.10） |
+| 0.06 | `drex-max`、`drex-v2.0`、`nace-ai/drex-max`、`nace-ai/drex-max-finance`、`nace-ai/drex-v2.0` |
+| 0.09 | `heygen/heygen-decision-1-turbo` |
+| 0.10 | `gemini-decision-1`、`google/gemini-decision-1`；`solar-decide`（Upstage 官网）；`baseten/mammoth-1`、`decision-models/baseten-mammoth-27b-latest` |
+| 0.14 | `heygen/heygen-decision-1` |
+| 0.15 | `cloudflare/clef-omni`（OpenRouter） |
+| 0.192 | `cloudflare/clef`（OpenRouter；Cloudflare Workers AI 官网 `clef` 为 0.24） |
+| 0 | 带 `:free` 的 OpenRouter 免费档、`respan/span-01-lite` |
+
+例外：
+- 同时装了官方 TypeSafe 插件时，Jev 模型（`jev-latest`、`jev-1.14.0` 等）的模板表达式要配在插件覆盖价 `decision::<模型>` 上，原因见[价格从哪里来](#价格从哪里来)。
+- `reflex`、`morph/reflex`：输入 0.042，缓存读取 0.002，表达式里把 `cache_read_tokens` 的单价换成 0.002。
+- `gpt-6-luna` 系列用[插件覆盖价](#gpt-6-luna聊天和-decisions-分开计费)。
+- 按次收费：`parallel/parallel-decisions-fast`、`parallel/decisions-fast:free` 等 Parallel 模型用 `u("requests") * 0.001`；Databricks ai-decide 见[下文](#databricks-ai-decide按次计费)。
+- 没查到公开价格的（SubQ、Inception、Telnyx、Fireworks、Ollama、自建模型）按你的进价自行填写。
+
+### 按上游实际费用计费
+
+OpenRouter、ScaleDown、Eden AI、OpenCode 等中转会在回复里报告本次请求的费用，插件把它上报为 `u("upstream_cost")`（美元），不会返回给客户端。这样可以给价格各不相同的一批模型配同一个"成本加价"表达式，例如给 `decision-custom` 或某个 OpenRouter 模型配：
+
+```text
+tier("base", (u("upstream_cost") ?? (u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.10 / 1000000 + u("cache_write_tokens") * 0.10 / 1000000)) * 1.2)
+```
+
+- `??` 前面是上游报告的费用，后面括号里是它缺席时的 token 价（括号不能省，New API 不允许 `??` 和 `*` 不加括号混写）。请求时上游还没报费用，New API 按后面的 token 价预扣；回复后有费用就按费用结算，多退少补。`* 1.2` 是加价 20%。
+- 不能只写 `u("upstream_cost") * 1.2`：预扣时没有这个字段，请求会被拒绝。
+- 官方 OpenAI、Gemini、TypeSafe 不报告费用，`??` 会一直用 token 价，对它们直接用上面的价格模板更清楚。
+- OpenRouter 的费用已包含联网检索等附加费；Perplexity 官方接口的联网检索费（每次 0.001 美元）不在回复里，需要联网时建议走 OpenRouter。
 
 ### gpt-6-luna：聊天和 Decisions 分开计费
 
@@ -415,7 +477,7 @@ ai-decide 不返回 token 用量，插件也不编造 token：只上报 `u("requ
   - URL 图片按 8192
   - 再加模板余量，并以上游上下文上限（或 `reserveTokens`）封顶；TypeSafe 带长上下文头时上限是 262,400
 - 回复后按上游报告的实际用量结算，多退少补。
-- 上游回复里没有用量时，**保留预扣额度**，不会当作免费。Databricks ai-decide 本来就没有用量，按次结算。
+- 上游回复里没有用量时，不会当作免费：token 表达式按预扣额度结算；`u("requests")` 表达式和固定按次价格照常按次结算。Databricks ai-decide 本来就没有用量，按次结算。
 - 上游报错、超时、插件拒绝的请求不扣费。
 
 ## 从官方 TypeSafe 插件迁移
@@ -424,7 +486,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 
 1. 安装 Decision，不用停用 TypeSafe 插件。
 2. 把 TypeSafe 渠道的插件改成 Decision。插件配置默认就是 `systemone`，Base URL、密钥、模型和重定向都不用改。`/v1/systemone` 两个插件都能接，由渠道绑定的插件执行。
-3. 价格：Jev 模型现有的 `u("input_tokens")` 模型级表达式可以继续用，不需要插件覆盖价。两个插件共享同名模型时，表达式只能引用两边都有的字段；原表达式用了 `u("output_tokens")` 也没关系，Decision 也有这个字段。
+3. 价格：Jev 模型现有的 `u("input_tokens")` 模型级表达式可以继续用。两个插件共享同名模型时，模型级表达式只能引用两边都有的字段；要把缓存 token 也计费，把[模板表达式](#常见模型价格模板)配在插件覆盖价 `decision::<模型>` 上。
 4. 没有渠道再绑定官方 TypeSafe 插件后即可停用它。迁移完成后优先使用 `/v1/systemone`；若有实际路由冲突，再使用 `/decision/v1/systemone`。
 
 ## 多模态
@@ -445,7 +507,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 | 现象 | 处理 |
 | --- | --- |
 | `model "xxx" is not served by this plugin` | 模型没声明：先查[模型表](#模型)里有没有别的写法，没有就按[任意模型名](#完整示例接入任意模型名)重定向到 `decision-custom` |
-| `plugin usage hook failed`（400） | 模型只有倍率或固定价格（或没配价格），见[价格从哪里来](#价格从哪里来)：普通模型配模型级任务表达式，`gpt-6-luna` 配 `decision::gpt-6-luna` |
+| `plugin usage hook failed`（400） | 模型只有倍率或固定价格（或没配价格），见[价格从哪里来](#价格从哪里来)：普通模型配模型级任务表达式，`gpt-6-luna` 配 `decision::gpt-6-luna`；要按次收费就给模型设固定价格，并打开渠道的 `perCallPrice` |
 | `Model xxx has no task price for plugin decision` | 模型级价格是聊天表达式（用了 `p`、`c` 等），给 `decision::xxx` 配插件覆盖价 |
 | `expr run error: invalid operation: <nil> …` | 表达式读了上游没报告的字段，常见于 Databricks ai-decide 用了 token 表达式：改成 `u("requests") * 单价` |
 | `no 'instructions'; add the text the model should answer` | 上游要求每题都有指令：打开渠道的 `fillInstructions`，或在请求里写上指令 |

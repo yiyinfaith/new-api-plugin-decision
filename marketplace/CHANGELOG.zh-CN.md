@@ -1,22 +1,23 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.2"
+version: "1.0.3"
 locale: "zh-CN"
 ---
 # Changelog
 
-## [1.0.2]
+## [1.0.3]
 
 ### Added
 
-- 渠道里可以直接勾选 106 个决策模型，不用模型重定向。覆盖 TypeSafe Jev、Liquid d1、Laya、OpenAI `gpt-6-luna`、Gemini Decision 1、Perplexity Decider、Microsoft Decision 1、Upstage Solar Decide、Bespoke Nimble、SubQ Snap、Inception Mercury Decide、Telnyx、Cloudflare Clef、ScaleDown、Baseten、Fireworks、Nace.AI Drex、Morph Reflex、Respan、Together Tev1，以及这些模型在 OpenRouter 和 Vercel AI Gateway 上的名字。每个 ID 都来自厂商文档或实时模型目录。
+- 可以按上游报告的费用计费。回复里带有美元费用时，插件把它上报为用量字段 `upstream_cost`，来源包括 OpenRouter、ScaleDown、OpenCode 的 `usage.cost` 和 Eden AI 顶层的 `cost`。成本加价表达式如 `(u("upstream_cost") ?? (token 价)) * 1.2`：预扣按 token 价，结算按上游费用。费用不会返回给客户端。
+
+- 渠道新增 `perCallPrice` 设置（默认关），打开后可以使用模型的固定按次价格，回复有没有用量或费用都能正常调用。默认关的原因：插件分不清固定价格和倍率，而 New API 对倍率定价的模型按每次「倍率 ÷ 2」美元扣费。
 
 ### Changed
 
-- 1.0.1 声明的模型全部保留。其它名字仍然可以重定向到 `decision-custom` 使用。
+- 回复缺少用量时改为按一次请求结算：`u("requests")` 价格能准确结算，token 表达式仍按预扣额度结算，不会按 0 计费。
 
 ### Migration
 
-- 新启用的模型要先配模型级任务表达式价格再开放，声明模型不会自动设置价格。
-- 勾选和渠道上游一致的写法，例如 Liquid 官方接口用 `d1.1`、OpenRouter 用 `liquid/d1.1`；也可以把一个名字重定向到上游的 ID。
+- 决策价格要计入缓存 token。大多数决策模型的缓存读取和输入同价，但插件把缓存 token 单独上报为 `cache_read_tokens`，表达式只读 `input_tokens` 时它们就不收费了。README 提供了常见模型的价格模板，三个输入字段都按输入价计费。

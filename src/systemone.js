@@ -13,7 +13,7 @@ import {
   requireUniqueNames,
   QUESTION_TYPES,
 } from "./ir.js";
-import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64, pick } from "./util.js";
+import { fail, hasOwn, isFiniteNumber, isObject, isStrictBase64, pick, reportedCost } from "./util.js";
 
 const S1_BASE_FIELDS = ["model", "state", "questions", "assets"];
 // Members a dialect adds on top of System One. important ones change what the
@@ -358,14 +358,17 @@ function s1Integer(value) {
   return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-export function s1ParseUsage(usage) {
+export function s1ParseUsage(usage, topLevelCost) {
   if (!isObject(usage)) return null;
   const input = s1Integer(usage.input_tokens);
   if (input === undefined) return null;
   const details = isObject(usage.input_tokens_details) ? usage.input_tokens_details : {};
   const cached = s1Integer(details.cached_tokens) || s1Integer(usage.cached_input_tokens) || 0;
   const output = s1Integer(usage.output_tokens) || 0;
-  return { input: input, cacheRead: Math.min(cached, input), cacheWrite: 0, output: output, reasoning: 0, total: input + output };
+  const result = { input: input, cacheRead: Math.min(cached, input), cacheWrite: 0, output: output, reasoning: 0, total: input + output };
+  const cost = reportedCost(usage.cost) !== undefined ? reportedCost(usage.cost) : reportedCost(topLevelCost);
+  if (cost !== undefined) result.cost = cost;
+  return result;
 }
 
 export function s1Parse(body, ir) {
@@ -374,7 +377,7 @@ export function s1Parse(body, ir) {
     const where = 'The answer to "' + question.name + '"';
     return s1ParseAnswer(hasOwn(body.answers, question.name) ? body.answers[question.name] : null, question, where);
   });
-  return { model: typeof body.model === "string" ? body.model : "", answers: answers, usage: s1ParseUsage(body.usage) };
+  return { model: typeof body.model === "string" ? body.model : "", answers: answers, usage: s1ParseUsage(body.usage, body.cost) };
 }
 
 // ---- client renderer --------------------------------------------------------

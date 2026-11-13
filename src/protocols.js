@@ -127,6 +127,8 @@ export function passthroughReply(clientId, upstreamId, result) {
   if (clientId !== upstreamId || !hasOwn(REPLY_USAGE, clientId) || !isObject(result.reply)) return null;
   const reply = {};
   for (const key of Object.keys(result.reply)) {
+    // Eden AI reports its cost at the top level.
+    if (key === "cost") continue;
     if (key !== "usage") reply[key] = result.reply[key];
     else if (result.usage && REPLY_USAGE[clientId]) reply.usage = REPLY_USAGE[clientId](result.usage);
   }

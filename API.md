@@ -1,6 +1,6 @@
 # Decision 插件接口参考
 
-版本 **1.0.2**。本文件是调用方和管理员的完整字段参考；安装、渠道和价格配置见 [README](README.md)。
+版本 **1.0.3**。本文件是调用方和管理员的完整字段参考；安装、渠道和价格配置见 [README](README.md)。
 
 ## 目录
 
@@ -405,7 +405,7 @@ OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回�
 | `upstream_invalid` | 502 | 上游回复缺答案或答案不匹配 |
 | `upstream_error` | 502 | 上游 200 回复里带错误 |
 
-上游返回的 4xx/5xx（如 401、429）按原状态码返回，消息取自上游。错误里不会带渠道密钥。模型只有倍率或固定价格（Databricks ai-decide 以外）时 New API 返回 400 `plugin usage hook failed`，见 [README](README.md#价格从哪里来)。
+上游返回的 4xx/5xx（如 401、429）按原状态码返回，消息取自上游。错误里不会带渠道密钥。模型只有倍率或固定价格、渠道又没打开 `perCallPrice` 时（Databricks ai-decide 除外），New API 返回 400 `plugin usage hook failed`，见 [README](README.md#价格从哪里来)。
 
 ## 计费字段
 
@@ -416,6 +416,7 @@ OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回�
 | `cache_write_tokens` | 全部 | 缓存写入 token |
 | `output_tokens` | 除 `gpt-6-luna` 外 | 输出 token |
 | `requests` | 除 `gpt-6-luna` 外 | 成功请求数，恒为 1 |
+| `upstream_cost` | 全部 | 上游回复里报告的费用（美元）：System One 族和 OpenAI 形状的 `usage.cost`，或 Eden AI 顶层的 `cost`。上游不报告时没有这一项；回复给客户端时去掉 |
 | `long_context` | `gpt-6-luna` 系列 | 总输入超过 272K token |
 
 - `gpt-6-luna` 系列指 `gpt-6-luna`、`openai/gpt-6-luna`、`openai/gpt-6-luna-decisions`、`gpt-6-luna-decisions`，以及重定向到它们、或由它们重定向而来的名字。这是插件里唯一的专属计费配置，因为只有它同时用于聊天和决策；其它模型都用上表的通用字段，插件不含任何单价。

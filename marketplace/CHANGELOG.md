@@ -1,24 +1,25 @@
 ---
 changelogVersion: 1
 plugin: "decision"
-version: "1.0.2"
+version: "1.0.3"
 locale: "en"
 translations:
   zh-CN: CHANGELOG.zh-CN.md
 ---
 # Changelog
 
-## [1.0.2]
+## [1.0.3]
 
 ### Added
 
-- Pick 106 decision models on a channel without a model mapping. The list covers TypeSafe Jev, Liquid d1, Laya, OpenAI `gpt-6-luna`, Gemini Decision 1, Perplexity Decider, Microsoft Decision 1, Upstage Solar Decide, Bespoke Nimble, SubQ Snap, Inception Mercury Decide, Telnyx, Cloudflare Clef, ScaleDown, Baseten, Fireworks, Nace.AI Drex, Morph Reflex, Respan, Together Tev1, and the OpenRouter and Vercel AI Gateway names of these models. Each ID comes from the vendor's documentation or live model catalog.
+- Bill at the cost the upstream reports. When a reply carries a USD cost, such as `usage.cost` from OpenRouter, ScaleDown or OpenCode, or Eden AI's top-level `cost`, the plugin reports it as the usage field `upstream_cost`. A cost-plus expression such as `(u("upstream_cost") ?? (<token price>)) * 1.2` reserves at the token price and settles at the reported cost. The cost is never returned to clients.
+
+- Accept a fixed per-call model price on a channel with the new `perCallPrice` setting (off by default). Requests then work whether or not the reply carries usage or a cost. The setting is off by default because the plugin cannot tell a fixed price from a ratio, and New API charges a ratio-priced model half its ratio in USD per call.
 
 ### Changed
 
-- Every model declared in 1.0.1 is still declared. Other names still work when mapped to `decision-custom`.
+- A reply without usage now settles as one request. A `u("requests")` price bills exactly, and a token expression still settles at the reserved amount, never at zero.
 
 ### Migration
 
-- Price each newly enabled model with a model-level task expression before offering it. Declaring a model does not set a price.
-- Pick the ID that matches the channel's upstream, for example `d1.1` for Liquid's own API and `liquid/d1.1` for OpenRouter, or map one name to the upstream's ID.
+- Charge cached input in decision prices. Most decision models bill cached input at the input price, but the plugin reports cached tokens as `cache_read_tokens`, so an expression that reads only `input_tokens` leaves them free. The README has a price template for common models that bills all three input fields.

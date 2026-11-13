@@ -1,0 +1,19 @@
+name: Model catalogs
+# Weekly check of the public decision model catalogs. A failed run means a
+# catalog lists a model the plugin does not declare yet: verify it with the
+# vendor's documentation, then add it to src/models.js by hand.
+on:
+  schedule:
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+jobs:
+  catalogs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/sync-models.mjs --strict

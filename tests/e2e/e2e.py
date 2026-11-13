@@ -242,6 +242,10 @@ def main():
                          "model_mapping": json.dumps({m: "decision-custom" for m in ["databricks-decide", "dbx-expr", "dbx-tokens", "dbx-fail"]}),
                          "setting": json.dumps({"task_plugin_key": "decision"}),
                          "settings": json.dumps({"plugin_config": {"protocol": "databricks", "modelPaths": {"dbx-fail": "/api/2.0/ai-functions/ai-decide?fail=403"}}})})
+    # A channel that accepts fixed per-call prices (aliases are cached, so it is created up front).
+    admin.channel({"name": "e2e-percall", "type": 61, "key": "upstream-key-pc", "base_url": MOCK, "status": 1, "priority": 10, "models": "acme/fixed",
+                   "model_mapping": json.dumps({"acme/fixed": "decision-custom"}), "setting": json.dumps({"task_plugin_key": "decision"}),
+                   "settings": json.dumps({"plugin_config": {"protocol": "systemone", "perCallPrice": True, "upstreamModels": {"acme/fixed": "missing-usage"}}})})
     admin.channel({"name": "e2e-chat", "type": 1, "key": "upstream-key-chat", "base_url": MOCK, "status": 1, "models": "gpt-6-luna"})
     if len(sys.argv) > 2:
         admin.channel({"name": "e2e-typesafe", "type": 61, "key": "upstream-key-ts", "base_url": MOCK, "status": 1, "models": "jev-1.13.0",
@@ -250,7 +254,7 @@ def main():
 
     jev = 'tier("base", u("input_tokens") * 0.042 / 1000000)'
     admin.option("ModelRatio", {"gpt-6-luna": 0.05, "ratio-model": 0.021})
-    admin.option("ModelPrice", {"databricks-decide": 0.002, "dbx-fail": 0.002})
+    admin.option("ModelPrice", {"databricks-decide": 0.002, "dbx-fail": 0.002, "acme/fixed": 0.003})
     admin.option("CompletionRatio", {"gpt-6-luna": 5})
     admin.option("CacheRatio", {"gpt-6-luna": 0.1})
     exprs = {m: jev for m in ["jev-latest", "jev-1.14.0", "jev-preview", "jev", "jev-1.13.0"]}
@@ -391,6 +395,36 @@ def main():
     time.sleep(0.6)
     after = admin.last_log()
     check("refused requests are not charged", (after or {}).get("id") == (before or {}).get("id"), (before and before.get("id"), after and after.get("id")))
+
+    # 11b. A channel that accepts fixed per-call prices: works even when the
+    # upstream reports no usage, and charges exactly the model price.
+    status, reply = call(token, "/v1/systemone", body_for("systemone", "acme/fixed"))
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("perCallPrice: fixed price, no usage in the reply, charged the price", status == 200 and log and log["model_name"] == "acme/fixed" and log["quota"] == round(0.003 * QUOTA_PER_USD), (status, reply if status != 200 else "", log and log["quota"]))
+
+    # 12. Cost-plus pricing with upstream_cost: reserved by tokens, settled by the
+    # cost the relay reports (the OpenRouter mock reports 0.0001), and the token
+    # price when the reply has no cost.
+    admin.channel({"name": "e2e-openrouter", "type": 61, "key": "upstream-key-or", "base_url": MOCK, "status": 1, "priority": 10, "models": "liquid/d1.1",
+                   "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "openrouter"}})})
+    admin.channel({"name": "e2e-nocost", "type": 61, "key": "upstream-key-nc", "base_url": MOCK, "status": 1, "priority": 10, "models": "d1.1",
+                   "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "systemone"}})})
+    cost_plus = 'tier("base", (u("upstream_cost") ?? (u("input_tokens") * 1 / 1000000 + u("cache_read_tokens") * 1 / 1000000 + u("cache_write_tokens") * 1 / 1000000)) * 1.2)'
+    exprs["liquid/d1.1"] = cost_plus
+    exprs["d1.1"] = cost_plus
+    set_task_prices(admin, exprs)
+    time.sleep(3)
+    status, reply = call(token, "/api/alpha/decisions", body_for("systemone", "liquid/d1.1"))
+    time.sleep(0.6)
+    log = admin.last_log()
+    check("cost-plus: settled by the relay's reported cost", status == 200 and "cost" not in json.dumps(reply.get("usage", {})) and log and log["model_name"] == "liquid/d1.1" and log["quota"] == math.floor(0.0001 * 1.2 * QUOTA_PER_USD + 0.5), (status, reply if status != 200 else "", log and log["quota"]))
+    status, reply = call(token, "/v1/systemone", body_for("systemone", "d1.1"))
+    total, cached, written = upstream_usage("d1.1")
+    time.sleep(0.6)
+    log = admin.last_log()
+    want = math.floor(total * 1.0 / 1e6 * 1.2 * QUOTA_PER_USD + 0.5)
+    check("cost-plus: falls back to the token price without a cost", status == 200 and log and log["model_name"] == "d1.1" and abs(log["quota"] - want) <= 1, (status, want, log and log["quota"]))
 
     print(f"\n{len(FAILED)} failed")
     for name in FAILED:

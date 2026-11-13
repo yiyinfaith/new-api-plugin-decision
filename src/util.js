@@ -99,3 +99,8 @@ export function pick(source, keys) {
   }
   return result;
 }
+
+// A USD amount a relay reports for a request: a finite, non-negative number.
+export function reportedCost(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}

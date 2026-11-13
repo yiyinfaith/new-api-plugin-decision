@@ -9,7 +9,7 @@ import { toDecisionError } from "./ir.js";
 import { CLIENTS, CLIENT_ROUTES, UPSTREAMS, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
 import { fail, headerValue, isObject } from "./util.js";
 
-const VERSION = "1.0.2";
+const VERSION = "1.0.3";
 
 const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context";
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
@@ -180,8 +180,9 @@ function submitResult(ctx, response) {
 // The host asks for billing ratios only on its per-call path, taken when the
 // model has no task expression: a fixed per-call price, or a ratio, which the
 // host turns into a flat charge of half the ratio in dollars per request and
-// never settles by tokens. Neither bills tokens, so a token upstream refuses
-// it; an upstream without token usage takes the fixed per-call price as is.
+// never settles by tokens. The hook cannot tell the two apart, so a token
+// upstream refuses the path unless the channel accepts fixed per-call prices;
+// an upstream without token usage takes the fixed per-call price as is.
 function perCallRefusal(ctx) {
   const model = ctx.model;
   if (billingProfile(ctx.upstreamModel || model, model))
@@ -191,7 +192,7 @@ function perCallRefusal(ctx) {
     );
   return (
     "Model " + model + " is priced per call or by ratio, which cannot bill decision tokens. Set its model price to a task expression that reads the token usage, " +
-    'such as tier("base", u("input_tokens") * 0.042 / 1000000)'
+    'such as tier("base", u("input_tokens") * 0.042 / 1000000), or turn on the channel\'s perCallPrice to accept a fixed per-call price'
   );
 }
 
@@ -199,7 +200,7 @@ export function extractUsage(ctx) {
   return run(function () {
     const prepared = prepare(ctx);
     if (ctx.usagePurpose === "billing_ratios") {
-      if (prepared.route.upstream.noUsage) return null;
+      if (prepared.route.upstream.noUsage || prepared.route.perCallPrice) return null;
       fail(perCallRefusal(ctx), "model_price_error");
     }
     return reservationFacts(prepared.ir, ctx.files || [], prepared.route, longContext(ctx), ctx.upstreamModel || ctx.model, ctx.model);
@@ -212,9 +213,10 @@ export function extractUsageOnComplete(ctx, result, data) {
   const upstream = isObject(data) && typeof data.protocol === "string" ? UPSTREAMS[data.protocol] : null;
   if (upstream && upstream.noUsage) return requestFacts();
   const usage = usageFromTaskData(data);
-  // Throwing keeps the reservation and makes the host log invalid usage; a
-  // reply without usage is never billed as free.
-  if (!usage) throw new Error("The upstream reply has no token usage; the reserved quota is kept");
+  // A reply without usage settles as one request: a per-request price bills
+  // exactly, and a token expression finds no token facts of the reply, so the
+  // host settles on the reservation's. It is never billed as free.
+  if (!usage) return requestFacts();
   return usageFacts(usage, ctx.upstreamModel || ctx.model, ctx.model);
 }
 
