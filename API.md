@@ -1,6 +1,6 @@
 # Decision 插件接口参考
 
-版本 **1.0.1**。本文件是调用方和管理员的完整字段参考；安装、渠道和价格配置见 [README](README.md)。
+版本 **1.0.2**。本文件是调用方和管理员的完整字段参考；安装、渠道和价格配置见 [README](README.md)。
 
 ## 目录
 
@@ -15,6 +15,7 @@
 - [错误](#错误)
 - [计费字段](#计费字段)
 - [兼容性](#兼容性)
+- [声明的模型](#声明的模型)
 
 ## 接口一览
 
@@ -471,3 +472,48 @@ OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回�
 | OpenCSG AIGateway | 第三方 | System One，每题必须有指令 | `systemone` + `fillInstructions`，Base URL `https://opencsg.com/aigateway`，真实测过 |
 
 用的是"System One + 扩展"的厂商时，只用 System One 标准字段最稳妥；扩展字段在同族直通时原样转发，跨协议时按上面的规则处理。
+
+## 声明的模型
+
+New API 只把任务插件声明的模型（或重定向到它们的名字）交给插件，所以插件在 `meta.models` 里声明了下列 ID，渠道里可以直接勾选。未声明的名字重定向到路由槽位 `decision-custom`。核实日期 2026-11-13；每个 ID 都来自下列官方来源，没有推测出来的名字。已声明的 ID 以后不会删除，渠道和价格可以放心引用。
+
+| 厂商 | 可直接勾选的模型 ID | 上游怎么接 |
+| --- | --- | --- |
+| TypeSafe Jev | `jev-1.14.0`、`jev-1.13.0`、`jev-latest`、`jev-preview`、`jev` | `systemone`，Base URL `https://api.typesafe.ai` |
+| Jev（网关写法） | `typesafe/jev-1.14`、`typesafe/jev-1.13`、`~typesafe/jev-latest`（OpenRouter）；`typesafe-ai/jev`、`typesafe-ai/jev-1.14.0`、`typesafe-ai/jev-1.13.0`（Vercel）；`typesafe/jev-latest`（LiteLLM、Eden AI） | 对应网关的协议 |
+| Databricks System One 路由 | `system.ai.typesafeai-jev-1-14-0`、`system.ai.openjev-qwen35-4b` | `systemone` + 路径 `/ai-gateway/typesafe/v1/systemone` |
+| OpenAI | `gpt-6-luna`、`gpt-6-luna-decisions`、`openai/gpt-6-luna`、`openai/gpt-6-luna-decisions` | `openai`；OpenRouter 用 `openai/gpt-6-luna-decisions` |
+| Google Gemini | `gemini-decision-1`、`google/gemini-decision-1` | `gemini` |
+| Liquid AI | `d1.1`、`d1-ultra`；`liquid/d1`、`liquid/d1.1`、`liquid/d1-ultra`、`~liquid/d1-latest`、`~liquid/d1-ultra-latest` | 官方 `systemone`，Base URL `https://api.liquid.ai/decisions`；带前缀的是 OpenRouter / Vercel 写法 |
+| Laya（Convai Innovations） | `convaiinnovations/laya` | Vercel AI Gateway；自建 `laya-serve` 见下 |
+| Perplexity | `pplx-decider-v1.3`、`pplx-decider-flash-v1.3`、`pplx-decider-v1.2`、`pplx-decider-flash-v1.2`、`pplx-decider-latest`、`pplx-decider-flash-latest`、旧名 `pplx-decider-v1.1-27b`、`pplx-decider-v1-27b`；`perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-flash-v1.3`、`perplexity/pplx-decider-v1.2`、`perplexity/pplx-decider-flash-v1.2`、`perplexity/pplx-decider-latest`、`perplexity/pplx-decider-flash-latest`、`perplexity/pplx-decider-v1.3:free`、`perplexity/pplx-decider-flash-v1.3:free`、`~perplexity/pplx-decider-latest`、`~perplexity/pplx-decider-flash-latest` | 官方 `systemone` + 路径 `/v1/decisions` |
+| Microsoft | `microsoft-decision-1`、`microsoft/microsoft-decision-1` | Foundry 用 `systemone` + 路径 `/providers/microsoft/v1/systemone`，模型重定向到你的部署名 |
+| Upstage | `solar-decide`、`upstage/solar-decide`、`upstage/solar-decide-flash` | `systemone` |
+| Bespoke Labs Nimble | `nimble-latest`、`nimble-v4.1-max`、`nimble-v4-max`、`nimble-v4`、`nimble-v3` | `systemone`，`maxQuestions` 64 |
+| SubQ | `subq-snap-1.2`、`subq-snap-1.1`、`subq-snap-latest`、`subq-snap-preview` | `systemone`（只发文本） |
+| Inception | `mercury-decide` | `systemone` + 路径 `/v1/decisions` |
+| Telnyx | `telnyx/decision-flash`、`telnyx/decision-pro` | `systemone` + 路径 `/v2/ai/typesafe/v1/systemone`，打开 `fillInstructions` |
+| Cloudflare Clef | `clef`、`clef-flash`、`clef-omni`；`cloudflare/clef`、`cloudflare/clef-flash`、`cloudflare/clef-omni` | Workers AI 用 `systemone` + 路径 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}` |
+| Ollama | `nimble`、`clef:cloud` | `systemone` |
+| ScaleDown | `classify`、`classify-1`、`scaledown/classify-1`、`scaledown/scaledown-classify-1` | `systemone` + 路径 `/v1/scaledown` |
+| Baseten | `decision-models/baseten-joey-2b-latest`、`decision-models/baseten-elephant-9b-latest`、`decision-models/baseten-mammoth-27b-latest`；`baseten/joey-1`、`baseten/elephant-1`、`baseten/mammoth-1` | `systemone`，Base URL `https://inference.baseten.co` |
+| Fireworks | `accounts/fireworks/models/rune` | `systemone` + 路径 `/inference/v1/systemone`，或 `openai` + `/inference/v1/decisions` |
+| Nace.AI Drex | `drex-latest`、`drex-max`、`drex-v2.0`、`drex-v1.5`；`nace-ai/drex-max`、`nace-ai/drex-max-finance`、`nace-ai/drex-v2.0`、`nace-ai/drex-v1.5`、`nace-ai/drex-max-v1.1` | `systemone`，Base URL `https://console.nace.ai` |
+| Morph | `reflex`、`morph/reflex` | `systemone`，Base URL `https://api.morphllm.com` |
+| Respan | `span-02`、`respan/span-02`、`respan/span-01`、`respan/span-01-lite`、`respan/span-01-lite:free` | `systemone` + 路径 `/api/v1/systemone` |
+| Together AI | `together/Tev1-4B-experimental`、`togethercomputer/tev1-4b-experimental` | 按 Together / OpenRouter 的接口 |
+| 只在 OpenRouter | `heygen/heygen-decision-1`、`heygen/heygen-decision-1-turbo`、`jaredpalmer/kev-4b`、`parallel/decisions-fast:free` | `openrouter` |
+| Parallel（Vercel） | `parallel/parallel-decisions-fast` | Vercel 的协议 |
+| 其它任意名字 | 路由槽位 `decision-custom` | 见 [README](README.md#完整示例接入任意模型名) |
+
+来源：
+
+- 官方文档：[TypeSafe](https://docs.typesafe.ai/models)、[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions)、[Gemini Decision 1](https://aistudio.google.com/docs/models/gemini-decision-1)、[Liquid AI](https://docs.liquid.ai/api/guides/decisions.md)、[Perplexity](https://docs.perplexity.ai/api-reference/decisions-post.md)、[Upstage](https://console.upstage.ai/docs/models/solar-decide.md)、[Bespoke Labs](https://docs.bespokelabs.ai/api-reference/systemone.md)、[Inception](https://docs.inceptionlabs.ai/api-reference/decisions/create-a-decision.md)、[Telnyx](https://developers.telnyx.com/api-reference/decision-models/evaluate-decision-models-typesafe-compatible.md)、[Cloudflare Clef](https://developers.cloudflare.com/workers-ai/models/clef)、[Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision)、[ScaleDown](https://docs.scaledown.ai/api-reference/decisions.md)、[Baseten](https://docs.baseten.co/inference/model-apis/decision-models)、[Fireworks](https://docs.fireworks.ai/api-reference/post-systemone.md)、[Databricks](https://docs.databricks.com/aws/en/machine-learning/model-serving/query-systemone-models)、[Nace.AI](https://www.nace.ai/drex.md)、[Morph](https://docs.morphllm.com/models/reflex.md)、[Respan](https://www.respan.ai/docs/ai-gateway/modalities/decisions)、[Together Tev1](https://huggingface.co/togethercomputer/Tev1-4B-experimental)、[Laya](https://huggingface.co/convaiinnovations/laya)、[Ollama](https://docs.ollama.com/api/systemone.md)、[LLM Gateway](https://docs.llmgateway.io/features/system-one)、[LiteLLM](https://docs.litellm.ai/docs/decisions)。
+- 实时模型目录：OpenRouter `GET https://openrouter.ai/api/v1/models?output_modalities=decisions`、Vercel AI Gateway `GET https://ai-gateway.vercel.sh/v1/models`（`type` 为 `evaluation`）、SubQ `GET https://api.subq.ai/v1/models`。
+- 刻意没有声明的：
+  - Cloudflare 的 `@cf/cloudflare/clef` 等目录名：New API 把 `@` 当作模型修饰符分隔符；请求体里的 `clef` 等已覆盖。
+  - Cloudflare `openai/decisions`：它的请求外层是 Workers AI 的 `{model, input}` 包装，不是这几种协议。
+  - Cloudflare `clairic`：抽取模型，只在 `/api/alpha/extractions` 上提供。
+  - Microsoft 目录名 `Microsoft-Decision-1`：与 `microsoft-decision-1` 只差大小写，New API 不区分大小写；Foundry 请求实际要填部署名。
+  - 第三方 Laya 托管站（laya.studio 等）和自建 `laya-serve` 的 `english`、`multilingual` 等路由名，以及只出现在第三方页面的名字（如 Liquid `d1:free`）。
+

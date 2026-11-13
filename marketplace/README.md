@@ -18,7 +18,7 @@ A gateway for decision models: typed questions answered with probabilities. Clie
 
 | Endpoint | Client format |
 | --- | --- |
-| `POST /v1/systemone`, `/typesafe/v1/systemone`, `/decisions/v1/systemone`, `/providers/microsoft/v1/systemone` | TypeSafe System One |
+| `POST /v1/systemone` (recommended); also `/decisions/v1/systemone`, `/providers/microsoft/v1/systemone` | TypeSafe System One |
 | `POST /api/alpha/decisions`, `/api/v1/systemone` | OpenRouter |
 | `POST /v1/decisions`, `/openai/v1/decisions` | OpenAI Decisions, or System One-shaped bodies on `/v1/decisions` |
 | `POST /v1beta/decisions` | Gemini Decisions |
@@ -26,7 +26,7 @@ A gateway for decision models: typed questions answered with probabilities. Clie
 | `POST /v1/scaledown` | ScaleDown |
 | `POST /api/2.0/ai-functions/ai-decide` | Databricks ai-decide, with a `model` for routing |
 
-Every path is also served under `/decision`. Declared models include `jev-1.14.0`, `jev-latest`, `gpt-6-luna` and `gemini-decision-1`. For any other model name, list it on the channel and map it to `decision-custom`; the upstream receives the client's name, or the ID set in `upstreamModels`.
+Every path is also served under `/decision`, for use only when a path conflicts with New API or another plugin. Over 100 decision models are declared, so they can be picked on a channel directly: TypeSafe Jev, Liquid d1, Laya, OpenAI `gpt-6-luna`, Gemini Decision 1, Perplexity Decider, Microsoft Decision 1, Upstage, Nimble, SubQ, Mercury Decide, Telnyx, Cloudflare Clef, ScaleDown, Baseten, Fireworks, Drex, Reflex, Respan and Tev1, under their vendor IDs and their OpenRouter and Vercel names. For any other model name, list it on the channel and map it to `decision-custom`; the upstream receives the client's name, or the ID set in `upstreamModels`.
 
 ## Billing
 

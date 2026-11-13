@@ -34,6 +34,14 @@ for (const file of ["marketplace/README.md", "marketplace/README.zh-CN.md"]) {
 }
 expect(read("marketplace/plugin.js") === read("plugin.js"), "marketplace/plugin.js differs from plugin.js");
 
+// Every declared model is documented under its exact ID.
+const { meta } = await import(new URL("../plugin.js", import.meta.url));
+expect(meta.version === version, "plugin.js was not built from src/plugin.js " + version);
+for (const file of ["README.md", "API.md"]) {
+  const missing = meta.models.filter((model) => !read(file).includes("`" + model + "`"));
+  expect(missing.length === 0, file + " does not list the declared models " + missing.join(", "));
+}
+
 if (problems.length) {
   for (const problem of problems) console.error("- " + problem);
   process.exit(1);

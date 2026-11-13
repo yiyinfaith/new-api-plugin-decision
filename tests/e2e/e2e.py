@@ -12,7 +12,7 @@ tokens. Start a throwaway instance and the mock upstream first, e.g.
 The first run creates the root user from NA_USER / NA_PASS. Exit status is the
 number of failed checks.
 """
-import base64, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+import base64, hashlib, json, math, os, sys, time, urllib.error, urllib.request, uuid
 
 BASE = os.environ.get("NA_BASE", "http://127.0.0.1:49300")
 MOCK = os.environ.get("MOCK", "http://127.0.0.1:49311")
@@ -204,7 +204,8 @@ def expected_quota(model, total, cached, written):
         usd = (total - cached) * 0.042 / 1e6
     else:
         usd = (total - cached) * 1.0 / 1e6
-    return round(usd * QUOTA_PER_USD)
+    # New API rounds half up; Python's round() would round half to even.
+    return math.floor(usd * QUOTA_PER_USD + 0.5)
 
 
 def set_task_prices(admin, exprs):
@@ -229,8 +230,8 @@ def main():
     time.sleep(2)
 
     s1 = admin.channel({"name": "e2e-systemone", "type": 61, "key": "upstream-key-s1", "base_url": MOCK, "status": 1, "priority": 10,
-                        "models": "jev-latest,jev-1.14.0,jev-preview,jev,liquid/d1,ratio-model",
-                        "model_mapping": json.dumps({"liquid/d1": "decision-custom", "ratio-model": "decision-custom", "jev-preview": "fail-401", "jev": "missing-usage"}),
+                        "models": "jev-latest,jev-1.14.0,jev-preview,jev,acme/decide-x,ratio-model",
+                        "model_mapping": json.dumps({"acme/decide-x": "decision-custom", "ratio-model": "decision-custom", "jev-preview": "fail-401", "jev": "missing-usage"}),
                         "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "systemone"}})})
     oa = admin.channel({"name": "e2e-openai", "type": 61, "key": "upstream-key-oa", "base_url": MOCK, "status": 1, "priority": 10, "models": "gpt-6-luna",
                         "setting": json.dumps({"task_plugin_key": "decision"}), "settings": json.dumps({"plugin_config": {"protocol": "openai"}})})
@@ -282,13 +283,13 @@ def main():
         check(f"{path} ({client} body, {model})", status == 200 and shape_ok(client, reply), (status, reply))
 
     # 3. Any model name through decision-custom; the client's name goes upstream.
-    status, reply = call(token, "/v1/decisions", body_for("openai", "liquid/d1"))
+    status, reply = call(token, "/v1/decisions", body_for("openai", "acme/decide-x"))
     sent = received()[-1]
-    check("custom model liquid/d1", status == 200 and sent["body"]["model"] == "liquid/d1", (status, reply, sent.get("body", {}).get("model")))
-    usage = upstream_usage("liquid/d1")
+    check("custom model acme/decide-x", status == 200 and sent["body"]["model"] == "acme/decide-x", (status, reply, sent.get("body", {}).get("model")))
+    usage = upstream_usage("acme/decide-x")
     time.sleep(0.6)
     log = admin.last_log()
-    check("custom model billed by its slot price", log and log["model_name"] == "liquid/d1" and log["quota"] == expected_quota("liquid/d1", *usage), (expected_quota("liquid/d1", *usage), log))
+    check("custom model billed by its slot price", log and log["model_name"] == "acme/decide-x" and log["quota"] == expected_quota("acme/decide-x", *usage), (expected_quota("acme/decide-x", *usage), log))
     status, reply = call(token, "/v1/decisions", body_for("openai", "not-a-declared-model"))
     check("undeclared model is refused by the host", status in (400, 404, 503) and "not-a-declared-model" in json.dumps(reply), (status, reply))
 

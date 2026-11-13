@@ -4,11 +4,11 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 
 - **N × N 协议互通**：客户端可以用 TypeSafe System One、OpenAI Decisions、Gemini Decisions、Vercel Evaluation、OpenRouter、Databricks ai-decide 任一格式请求，上游可以是其中任一协议。插件经统一中间表示（Decision IR）转换请求，并把回复转回客户端自己的格式。
 - **上游协议手动指定**：在渠道里选协议、路径和密钥请求头，可按模型分别覆盖；从不根据域名猜协议，未知中转站也能接。
-- **任意模型名**：用渠道的模型重定向把任意名字映射到 `decision-custom`，不用改插件，见[模型](#模型)。
+- **常见模型开箱即用**：声明了 100 多个经官方文档或模型目录核实的决策模型 ID（Jev、Liquid d1、Laya、OpenAI、Gemini、Perplexity 等），渠道里直接勾选；其它名字重定向到 `decision-custom` 即可，见[模型](#模型)。
 - **按真实用量计费**：输入、缓存读取、缓存写入、输出分开上报。普通模型直接用 New API 的模型级任务表达式；只有 `gpt-6-luna` 要另配插件覆盖价，和它的普通聊天计费互不影响。不报用量的 Databricks ai-decide 按次计费。
 - **完整保留官方 TypeSafe 插件的能力**：四种问题类型、图片、SDK 的 multipart 上传、长上下文、错误格式、JSON 键顺序。
 
-当前版本：v1.0.1，渠道配置（`channelConfig`）需要 rc.50 及以上。
+当前版本：v1.0.2，渠道配置（`channelConfig`）需要 rc.50 及以上。
 
 **完整的接口字段、转换规则、兼容性矩阵和报错格式见 [API.md](API.md)。**
 
@@ -86,16 +86,42 @@ NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意�
 
 ## 模型
 
-插件声明的模型可以直接勾选：
+New API 只把插件声明过的模型、或重定向到声明模型的名字交给插件，这是宿主限制，见[已知限制](#已知限制)。所以插件声明了常见决策模型的 ID，在渠道「模型」里直接勾选即可，不用重定向。下表的每个 ID 都在厂商官方文档或模型目录里核实过（2026-11-13），没有编造；未来的新模型和自建模型用 `decision-custom` 接入。
 
-- `jev-1.14.0`、`jev-1.13.0`、`jev-latest`、`jev-preview`、`jev`
-- `gpt-6-luna`、`gemini-decision-1`
-- `typesafe-ai/jev`、`typesafe-ai/jev-1.14.0`、`typesafe/jev-1.13`
-- `openai/gpt-6-luna`、`openai/gpt-6-luna-decisions`、`gpt-6-luna-decisions`
-- `google/gemini-decision-1`、`microsoft-decision-1`
-- 路由槽位 `decision-custom`
+| 厂商 | 可直接勾选的模型 ID | 上游怎么接 |
+| --- | --- | --- |
+| TypeSafe Jev | `jev-1.14.0`、`jev-1.13.0`、`jev-latest`、`jev-preview`、`jev` | `systemone`，Base URL `https://api.typesafe.ai` |
+| Jev（网关写法） | `typesafe/jev-1.14`、`typesafe/jev-1.13`、`~typesafe/jev-latest`（OpenRouter）；`typesafe-ai/jev`、`typesafe-ai/jev-1.14.0`、`typesafe-ai/jev-1.13.0`（Vercel）；`typesafe/jev-latest`（LiteLLM、Eden AI） | 对应网关的协议 |
+| Databricks System One 路由 | `system.ai.typesafeai-jev-1-14-0`、`system.ai.openjev-qwen35-4b` | `systemone` + 路径 `/ai-gateway/typesafe/v1/systemone` |
+| OpenAI | `gpt-6-luna`、`gpt-6-luna-decisions`、`openai/gpt-6-luna`、`openai/gpt-6-luna-decisions` | `openai`；OpenRouter 用 `openai/gpt-6-luna-decisions` |
+| Google Gemini | `gemini-decision-1`、`google/gemini-decision-1` | `gemini` |
+| Liquid AI | `d1.1`、`d1-ultra`；`liquid/d1`、`liquid/d1.1`、`liquid/d1-ultra`、`~liquid/d1-latest`、`~liquid/d1-ultra-latest` | 官方 `systemone`，Base URL `https://api.liquid.ai/decisions`；带前缀的是 OpenRouter / Vercel 写法 |
+| Laya（Convai Innovations） | `convaiinnovations/laya` | Vercel AI Gateway；自建 `laya-serve` 见下 |
+| Perplexity | `pplx-decider-v1.3`、`pplx-decider-flash-v1.3`、`pplx-decider-v1.2`、`pplx-decider-flash-v1.2`、`pplx-decider-latest`、`pplx-decider-flash-latest`、旧名 `pplx-decider-v1.1-27b`、`pplx-decider-v1-27b`；`perplexity/pplx-decider-v1.3`、`perplexity/pplx-decider-flash-v1.3`、`perplexity/pplx-decider-v1.2`、`perplexity/pplx-decider-flash-v1.2`、`perplexity/pplx-decider-latest`、`perplexity/pplx-decider-flash-latest`、`perplexity/pplx-decider-v1.3:free`、`perplexity/pplx-decider-flash-v1.3:free`、`~perplexity/pplx-decider-latest`、`~perplexity/pplx-decider-flash-latest` | 官方 `systemone` + 路径 `/v1/decisions` |
+| Microsoft | `microsoft-decision-1`、`microsoft/microsoft-decision-1` | Foundry 用 `systemone` + 路径 `/providers/microsoft/v1/systemone`，模型重定向到你的部署名 |
+| Upstage | `solar-decide`、`upstage/solar-decide`、`upstage/solar-decide-flash` | `systemone` |
+| Bespoke Labs Nimble | `nimble-latest`、`nimble-v4.1-max`、`nimble-v4-max`、`nimble-v4`、`nimble-v3` | `systemone`，`maxQuestions` 64 |
+| SubQ | `subq-snap-1.2`、`subq-snap-1.1`、`subq-snap-latest`、`subq-snap-preview` | `systemone`（只发文本） |
+| Inception | `mercury-decide` | `systemone` + 路径 `/v1/decisions` |
+| Telnyx | `telnyx/decision-flash`、`telnyx/decision-pro` | `systemone` + 路径 `/v2/ai/typesafe/v1/systemone`，打开 `fillInstructions` |
+| Cloudflare Clef | `clef`、`clef-flash`、`clef-omni`；`cloudflare/clef`、`cloudflare/clef-flash`、`cloudflare/clef-omni` | Workers AI 用 `systemone` + 路径 `/client/v4/accounts/<账号ID>/ai/run/@cf/cloudflare/{model}` |
+| Ollama | `nimble`、`clef:cloud` | `systemone` |
+| ScaleDown | `classify`、`classify-1`、`scaledown/classify-1`、`scaledown/scaledown-classify-1` | `systemone` + 路径 `/v1/scaledown` |
+| Baseten | `decision-models/baseten-joey-2b-latest`、`decision-models/baseten-elephant-9b-latest`、`decision-models/baseten-mammoth-27b-latest`；`baseten/joey-1`、`baseten/elephant-1`、`baseten/mammoth-1` | `systemone`，Base URL `https://inference.baseten.co` |
+| Fireworks | `accounts/fireworks/models/rune` | `systemone` + 路径 `/inference/v1/systemone`，或 `openai` + `/inference/v1/decisions` |
+| Nace.AI Drex | `drex-latest`、`drex-max`、`drex-v2.0`、`drex-v1.5`；`nace-ai/drex-max`、`nace-ai/drex-max-finance`、`nace-ai/drex-v2.0`、`nace-ai/drex-v1.5`、`nace-ai/drex-max-v1.1` | `systemone`，Base URL `https://console.nace.ai` |
+| Morph | `reflex`、`morph/reflex` | `systemone`，Base URL `https://api.morphllm.com` |
+| Respan | `span-02`、`respan/span-02`、`respan/span-01`、`respan/span-01-lite`、`respan/span-01-lite:free` | `systemone` + 路径 `/api/v1/systemone` |
+| Together AI | `together/Tev1-4B-experimental`、`togethercomputer/tev1-4b-experimental` | 按 Together / OpenRouter 的接口 |
+| 只在 OpenRouter | `heygen/heygen-decision-1`、`heygen/heygen-decision-1-turbo`、`jaredpalmer/kev-4b`、`parallel/decisions-fast:free` | `openrouter` |
+| Parallel（Vercel） | `parallel/parallel-decisions-fast` | Vercel 的协议 |
+| 其它任意名字 | 路由槽位 `decision-custom` | 见[完整示例](#完整示例接入任意模型名) |
 
-New API 只把插件声明过的模型、或重定向到声明模型的名字交给插件，这是宿主限制，见[已知限制](#已知限制)。插件不限制模型名本身，其它名字都靠下面的配置接入。
+- **按渠道选写法**：同一个模型在不同平台的 ID 不同（Liquid 官方是 `d1.1`，OpenRouter 是 `liquid/d1.1`）。上游默认收到渠道里的这个名字，所以要勾选和渠道上游一致的写法；想对外统一用一个名字时，用模型重定向或 `upstreamModels` 换成上游的写法，见[下文](#示例声明的模型换上游-id)。
+- `~` 开头的是 OpenRouter 的别名，始终指向该系列的最新模型；`:free` 是 OpenRouter 的免费档。
+- 模型名不区分大小写：请求 `togethercomputer/Tev1-4B-experimental` 也能匹配，但上游收到的是声明的写法 `togethercomputer/tev1-4b-experimental`；上游区分大小写时，用 `upstreamModels` 指定原样的 ID。
+- 自建的 Laya（`laya-serve`）兼容 System One，用 `systemone` 协议；它的路由名（如 `english`、`multilingual`）比较通用，没有声明，按[任意模型名](#完整示例接入任意模型名)重定向到 `decision-custom`。
+- 价格不随声明自动生效：每个要用的模型都按[计费](#计费)配置价格。
 
 ### 一个请求涉及的三个名字
 
@@ -116,14 +142,14 @@ New API 只把插件声明过的模型、或重定向到声明模型的名字交
 
 ### 完整示例：接入任意模型名
 
-假设中转站 `https://relay.example.com` 提供 System One 接口，有 `liquid/d1` 和 `acme-decide-v2` 两个模型。你想让客户端用 `liquid/d1` 和 `my-decider` 两个名字调用，其中 `my-decider` 实际发给 `acme-decide-v2`。
+假设中转站 `https://relay.example.com` 提供 System One 接口，有 `acme/decide-x` 和 `acme-decide-v2` 两个插件没声明的模型。你想让客户端用 `acme/decide-x` 和 `my-decider` 两个名字调用，其中 `my-decider` 实际发给 `acme-decide-v2`。
 
 1. 新建渠道：类型 Task Plugin（61），插件 Decision，Base URL `https://relay.example.com`，密钥填中转站的 Key。
-2. 「模型」填 `liquid/d1,my-decider`。
+2. 「模型」填 `acme/decide-x,my-decider`。
 3. 「模型重定向」填：
 
    ```json
-   {"liquid/d1": "decision-custom", "my-decider": "decision-custom"}
+   {"acme/decide-x": "decision-custom", "my-decider": "decision-custom"}
    ```
 
 4. 插件配置填：
@@ -132,7 +158,7 @@ New API 只把插件声明过的模型、或重定向到声明模型的名字交
    {"protocol": "systemone", "upstreamModels": {"my-decider": "acme-decide-v2"}}
    ```
 
-5. 价格：在「模型价格」里给 `decision-custom` 配一个模型级任务表达式，所有重定向到它的名字共用。要分开定价时，给 `liquid/d1`、`my-decider` 各配一个，名字自己的价格优先。
+5. 价格：在「模型价格」里给 `decision-custom` 配一个模型级任务表达式，所有重定向到它的名字共用。要分开定价时，给 `acme/decide-x`、`my-decider` 各配一个，名字自己的价格优先。
 
    ```text
    tier("base", u("input_tokens") * 0.05 / 1000000)
@@ -142,7 +168,7 @@ New API 只把插件声明过的模型、或重定向到声明模型的名字交
 
 | 客户端 `model` | 上游收到的 `model` | 价格来自 |
 | --- | --- | --- |
-| `liquid/d1` | `liquid/d1` | `liquid/d1` 自己的表达式，没有就用 `decision-custom` 的 |
+| `acme/decide-x` | `acme/decide-x` | `acme/decide-x` 自己的表达式，没有就用 `decision-custom` 的 |
 | `my-decider` | `acme-decide-v2` | `my-decider` 自己的表达式，没有就用 `decision-custom` 的 |
 
 ```bash
@@ -418,7 +444,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 
 | 现象 | 处理 |
 | --- | --- |
-| `model "xxx" is not served by this plugin` | 模型没声明：按[任意模型名](#完整示例接入任意模型名)重定向到 `decision-custom` |
+| `model "xxx" is not served by this plugin` | 模型没声明：先查[模型表](#模型)里有没有别的写法，没有就按[任意模型名](#完整示例接入任意模型名)重定向到 `decision-custom` |
 | `plugin usage hook failed`（400） | 模型只有倍率或固定价格（或没配价格），见[价格从哪里来](#价格从哪里来)：普通模型配模型级任务表达式，`gpt-6-luna` 配 `decision::gpt-6-luna` |
 | `Model xxx has no task price for plugin decision` | 模型级价格是聊天表达式（用了 `p`、`c` 等），给 `decision::xxx` 配插件覆盖价 |
 | `expr run error: invalid operation: <nil> …` | 表达式读了上游没报告的字段，常见于 Databricks ai-decide 用了 token 表达式：改成 `u("requests") * 单价` |

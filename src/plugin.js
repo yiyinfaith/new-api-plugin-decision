@@ -3,34 +3,13 @@
 // Response: upstream reply -> upstream parser -> answers/usage IR -> client renderer
 
 import { DEFAULT_EXAMPLES, DEFAULT_SCHEMA, SPECIAL_BILLING, billingProfile, requestFacts, reservationFacts, usageFacts, usageFromTaskData } from "./billing.js";
-import { CHANNEL_CONFIG, CUSTOM_SLOT, resolveChannel } from "./channel.js";
+import { CHANNEL_CONFIG, resolveChannel } from "./channel.js";
+import { MODELS } from "./models.js";
 import { toDecisionError } from "./ir.js";
 import { CLIENTS, CLIENT_ROUTES, UPSTREAMS, clientProtocol, encodeUpstream, parseUpstream, passthroughReply } from "./protocols.js";
 import { fail, headerValue, isObject } from "./util.js";
 
-const VERSION = "1.0.1";
-
-// Declared models. Any other name works through the channel's model mapping:
-// map it to decision-custom (the client's name is sent upstream) or to one of
-// these. Upstream model IDs are free: map a declared name to anything.
-const MODELS = [
-  "jev-1.14.0",
-  "jev-1.13.0",
-  "jev-latest",
-  "jev-preview",
-  "jev",
-  "gpt-6-luna",
-  "gemini-decision-1",
-  "typesafe-ai/jev",
-  "typesafe-ai/jev-1.14.0",
-  "typesafe/jev-1.13",
-  "openai/gpt-6-luna",
-  "openai/gpt-6-luna-decisions",
-  "gpt-6-luna-decisions",
-  "google/gemini-decision-1",
-  "microsoft-decision-1",
-  CUSTOM_SLOT,
-];
+const VERSION = "1.0.2";
 
 const LONG_CONTEXT_HEADER = "TypeSafe-Danger-Zone-Long-Context";
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";

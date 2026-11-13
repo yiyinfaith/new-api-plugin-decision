@@ -112,6 +112,30 @@ test("manifest: routes, models, config", () => {
   assert.deepEqual(plugin.meta.requiredCapabilities, ["json-order@1"]);
 });
 
+test("declared models: valid for the host, nothing from earlier releases dropped", () => {
+  const models = plugin.meta.models;
+  const folded = models.map((model) => model.toLowerCase());
+  assert.equal(new Set(folded).size, models.length, "unique case-insensitively, as New API requires");
+  for (const model of models) {
+    assert.equal(model, model.trim());
+    assert.ok(model && !/[\s,@]/.test(model), model);
+  }
+  const released = ["jev-1.14.0", "jev-1.13.0", "jev-latest", "jev-preview", "jev", "gpt-6-luna", "gemini-decision-1", "typesafe-ai/jev", "typesafe-ai/jev-1.14.0", "typesafe/jev-1.13", "openai/gpt-6-luna", "openai/gpt-6-luna-decisions", "gpt-6-luna-decisions", "google/gemini-decision-1", "microsoft-decision-1", "decision-custom"];
+  for (const model of released) assert.ok(models.includes(model), model + " was declared in 1.0.1");
+  assert.equal(models[models.length - 1], "decision-custom");
+  for (const model of ["d1.1", "liquid/d1-ultra", "convaiinnovations/laya", "pplx-decider-v1.3", "solar-decide", "nimble-latest", "clef", "drex-max"]) assert.ok(models.includes(model), model);
+  // The special profile only lists declared gpt-6-luna names.
+  assert.deepEqual(plugin.meta.usageProfiles[0].models, ["gpt-6-luna", "openai/gpt-6-luna", "openai/gpt-6-luna-decisions", "gpt-6-luna-decisions"]);
+});
+
+test("a declared model goes upstream under its own name unless mapped", () => {
+  const ctx = (model, options) => driverContext(decode(S1.path, Object.assign({}, S1.body, { model })), options);
+  assert.equal(plugin.buildSubmitRequest(ctx("d1.1")).body.model, "d1.1");
+  assert.equal(plugin.buildSubmitRequest(ctx("~liquid/d1-latest", { config: { protocol: "openrouter" } })).body.model, "~liquid/d1-latest");
+  assert.equal(plugin.buildSubmitRequest(ctx("liquid/d1.1", { config: { upstreamModels: { "liquid/d1.1": "d1.1" } } })).body.model, "d1.1");
+  assert.equal(plugin.buildSubmitRequest(ctx("clef", { config: { path: "/client/v4/accounts/abc/ai/run/@cf/cloudflare/{model}" } })).url, "https://upstream.example/client/v4/accounts/abc/ai/run/@cf/cloudflare/clef");
+});
+
 test("decoders are pure and repeatable", () => {
   const first = decode(OA.path, OA.body);
   const second = decode(OA.path, OA.body);

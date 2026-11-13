@@ -1,5 +1,16 @@
 # 更新日志
 
+## 1.0.2（2026-11-13）
+
+扩充声明的决策模型，常见模型开箱即用。
+
+- **106 个声明模型**（1.0.1 是 16 个）：TypeSafe Jev、Liquid d1、Laya、OpenAI `gpt-6-luna`、Gemini Decision 1、Perplexity Decider、Microsoft Decision 1、Upstage Solar Decide、Bespoke Nimble、SubQ Snap、Inception Mercury Decide、Telnyx、Cloudflare Clef、ScaleDown、Baseten、Fireworks、Nace.AI Drex、Morph Reflex、Respan、Together Tev1、Databricks System One 路由，以及 OpenRouter、Vercel AI Gateway、LiteLLM 等网关上的写法。渠道里直接勾选，不用再重定向到 `decision-custom`。
+- **严格核实**：每个 ID 都来自厂商官方文档或实时模型目录（OpenRouter、Vercel AI Gateway、SubQ 的 `/models` 接口），2026-11-13 核对；只出现在第三方页面的名字没有收录。来源列在 API.md 的「声明的模型」。
+- **兼容**：1.0.1 的 16 个模型全部保留，`decision-custom` 继续用于未知模型；路由、协议转换和计费逻辑不变。
+- 模型清单移到 `src/models.js`，按厂商分组注明来源。
+- `check-release.mjs` 检查每个声明的模型都出现在 README 和 API.md 里；新增测试检查模型名唯一（不区分大小写）、不含 `@` 和空白、旧模型没被删掉。
+- 文档：README 的「模型」一节改成按厂商的模型表，说明不同平台写法的选择；「任意模型名」示例换成未声明的名字。
+
 ## 1.0.1（2026-11-13）
 
 新增 Databricks ai-decide，调整计费设计。
