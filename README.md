@@ -266,6 +266,27 @@ New API 给插件请求定价时按下面的顺序找，找到就停（rc.50 实
 
 因此插件不接受倍率，也不接受固定按次价格给按 token 计费的决策请求定价，避免错误地退回按次收费。这时 New API 返回 400 `plugin usage hook failed`（宿主隐藏了插件的说明文字）。请改成下面的模型级任务表达式。同一模型的普通聊天照常用倍率，不受影响。
 
+### 任务表达式写法与模型广场价格展示
+
+**计费是否生效**与**模型广场能否展开价格表**是两回事。New API rc.50 的模型广场只识别部分规范写法；即使表达式能够正常执行和结算，界面仍可能显示「特殊计费表达式」及原始公式。此时不要仅凭展示判断为计费错误。
+
+为尽可能让价格在模型广场按档位展示，建议按以下规则书写任务表达式：
+
+- 用 `tier("档位名", ...)` 包裹每个档位的价格。
+- **每个 Token 字段独立除以 `1000000`，再相加**，例如 `u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.01 / 1000000`；避免把多个字段先加起来、最后统一除以 `1000000`。
+- 布尔条件写成显式比较，如 `u("long_context") == true`；不要只写 `u("long_context")` 作为条件。这只适用于插件用量 Schema 已声明的布尔字段。
+- 只使用插件声明且上游确实会上报的用量字段；一般模型不要照抄 `gpt-6-luna` 的专属 `long_context` 条件。
+
+```text
+# 推荐：模型广场更容易展开成价格表
+tier("base", u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.01 / 1000000)
+
+# 不推荐：计费数学结果相同，但模型广场可能只显示原始表达式
+tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01) / 1000000)
+```
+
+若仍显示「特殊计费表达式」，先检查表达式与模型的用量 Schema，再通过实际请求和消费日志核对结算；**不要仅为了展示而改动价格**。切换可视化编辑模式前请先备份原始表达式，防止编辑器重建公式时覆盖自定义逻辑。以下示例已尽量采用更易展示的格式。
+
 ### 模型级任务表达式（普通模型）
 
 「模型价格」→ 选模型（没有就新增）→ 计费方式选**表达式**，填入表达式。可用字段：
@@ -292,7 +313,7 @@ New API 给插件请求定价时按下面的顺序找，找到就停（rc.50 实
 Jev 的模型级表达式：
 
 ```text
-tier("base", (u("input_tokens") + u("cache_read_tokens") + u("cache_write_tokens")) * 0.042 / 1000000)
+tier("base", u("input_tokens") * 0.042 / 1000000 + u("cache_read_tokens") * 0.042 / 1000000 + u("cache_write_tokens") * 0.042 / 1000000)
 ```
 
 Gemini Decision 1 的模型级表达式（`gemini-decision-1` 不用于聊天，不需要插件覆盖价）：
@@ -329,8 +350,10 @@ u("requests") * 0.001
 | `u("long_context")` | 总输入超过 272K token 时为 true，此时官方价格翻倍 |
 
 ```text
-u("long_context") ? tier("long", (u("input_tokens") * 0.20 + u("cache_read_tokens") * 0.02 + u("cache_write_tokens") * 0.25) / 1000000) : tier("base", (u("input_tokens") * 0.10 + u("cache_read_tokens") * 0.01 + u("cache_write_tokens") * 0.125) / 1000000)
+u("long_context") == true ? tier("long", u("input_tokens") * 0.20 / 1000000 + u("cache_read_tokens") * 0.02 / 1000000 + u("cache_write_tokens") * 0.25 / 1000000) : tier("base", u("input_tokens") * 0.10 / 1000000 + u("cache_read_tokens") * 0.01 / 1000000 + u("cache_write_tokens") * 0.125 / 1000000)
 ```
+
+**注意：**这里将 `long_context` 显式比较为 `true`，并对每个 Token 费用分别除以 `1000000`；与旧公式的计费结果相同，但更容易被 New API rc.50 的价格展示解析器识别。模型广场能否展示价格表不影响实际结算，请以消费日志为准。
 
 别名重定向到 `gpt-6-luna` 时共用 `decision::gpt-6-luna`；直接勾选的别名（如 `openai/gpt-6-luna`）要单独配 `decision::openai/gpt-6-luna`。
 
@@ -401,6 +424,7 @@ Decision 覆盖官方 TypeSafe 插件 1.2.0 的全部功能，两者可以同时
 | `expr run error: invalid operation: <nil> …` | 表达式读了上游没报告的字段，常见于 Databricks ai-decide 用了 token 表达式：改成 `u("requests") * 单价` |
 | `no 'instructions'; add the text the model should answer` | 上游要求每题都有指令：打开渠道的 `fillInstructions`，或在请求里写上指令 |
 | `model_price_error` | 按[价格从哪里来](#价格从哪里来)配置；不要把带 `u()` 的表达式配给也走聊天的模型 |
+| 模型广场显示「特殊计费表达式」、无法展开价格表 | 一般是展示解析器不支持当前写法，不等于扣费失败；按[表达式写法说明](#任务表达式写法与模型广场价格展示)调整格式，再用消费日志核对 |
 | `unsupported_modality` / `unsupported_question_type` | 上游协议不支持这种内容或题型，换上游协议或改请求 |
 | `limit_exceeded` | 超过上游的问题数、选项数或等级数；插件不拆分请求 |
 | `/typesafe/v1/systemone` 返回 503 | 装了官方 TypeSafe 插件时这个前缀归它，用 `/v1/systemone` 或 `/decision/...` |
