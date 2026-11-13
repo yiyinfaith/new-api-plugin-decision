@@ -4,6 +4,8 @@
 
 新增抽取任务和更多厂商协议。
 
+- **插件 Logo**：新增 `icon.svg`，New API 后台的插件列表会显示它。
+
 - **抽取（Extractions）**：
   - 新增客户端路由 `POST /api/alpha/extractions`，格式同 OpenRouter Extractions API：按字段定义从文本或图片中抽取有类型的值。字段类型有 text、number、date、time、datetime、duration、list、estimate、forecast，按 OpenRouter 的 schema 严格校验。
   - 新增上游协议 `extractions`（OpenRouter，或另一台装了本插件的 New API）和 `clairic`（Cloudflare Workers AI 官方接口，图片转成它的 `images` 数组）。

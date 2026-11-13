@@ -1,3 +1,5 @@
+<p align="center"><img src="icon.svg" alt="Decision" width="128" /></p>
+
 # Decision — New API 决策模型插件
 
 NewAPI 通用决策模型插件，支持多种决策协议双向转换、任意模型接入、自定义上游协议及路径、智能路由与灵活计费。
