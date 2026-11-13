@@ -1,0 +1,423 @@
+# Decision 插件接口参考
+
+版本 **1.0.0**。本文件是调用方和管理员的完整字段参考；安装、渠道和价格配置见 [README](README.md)。
+
+## 目录
+
+- [接口一览](#接口一览)
+- [通用规则](#通用规则)
+- [请求格式](#请求格式)：[System One](#typesafe-system-one)、[OpenRouter](#openrouter)、[ScaleDown](#scaledown)、[System One 形状的 /v1/decisions](#system-one-形状的-v1decisions)、[OpenAI Decisions](#openai-decisions)、[Gemini Decisions](#gemini-decisions)、[Vercel Evaluation](#vercel-evaluation)
+- [回复](#回复)
+- [上游协议](#上游协议)
+- [转换规则](#转换规则)
+- [多模态](#多模态)
+- [数量限制](#数量限制)
+- [错误](#错误)
+- [计费字段](#计费字段)
+- [兼容性](#兼容性)
+
+## 接口一览
+
+所有路径都是 `POST`，也都能加 `/decision` 前缀（如 `/decision/v1beta/decisions`）。
+
+| 客户端协议 | 路径 | 请求体 | 回复 |
+| --- | --- | --- | --- |
+| TypeSafe System One | `/v1/systemone`、`/typesafe/v1/systemone`、`/decisions/v1/systemone`、`/providers/microsoft/v1/systemone` | JSON，或 TypeSafe SDK 的 multipart | System One |
+| OpenRouter | `/api/alpha/decisions`、`/api/v1/systemone` | JSON | System One + `id`、缓存 token |
+| ScaleDown | `/v1/scaledown` | JSON | System One |
+| OpenAI Decisions | `/v1/decisions`（`input` + `questions` 数组）、`/openai/v1/decisions` | JSON | OpenAI Decisions |
+| System One 形状 | `/v1/decisions`（`state` 或 `questions` 对象） | JSON | System One |
+| Gemini Decisions | `/v1beta/decisions` | JSON | Gemini Decisions |
+| Vercel Evaluation | `/v1/evaluate` | JSON | AI SDK 评估格式 |
+
+- `/typesafe/...` 在装了官方 TypeSafe 插件时归它所有；`/v1/systemone` 两个插件共用，由渠道绑定的插件执行。
+- 请求都是同步的：一次请求一次回复，没有任务 ID 要轮询。
+- 不会占用 `/v1/tasks`、`/v1/chat/completions` 等其它接口。
+
+## 通用规则
+
+- **鉴权**：`Authorization: Bearer <New API 令牌>`。插件路由不认厂商自己的密钥头。
+- **模型**：`model` 必填，决定渠道；渠道的插件配置决定上游协议（见 [README](README.md#渠道配置)）。模型名大小写不同也能匹配声明的模型。
+- **未知字段**：每种格式都拒绝它没定义的顶层字段（`does not accept the request field …`），防止拼错的参数被静默丢弃。少数厂商扩展字段见各格式说明。
+- **用量**：只取上游回复里的 usage；请求里不能写用量。
+- **键顺序**：发往上游的请求保持客户端的 JSON 键顺序（TypeSafe 会把 state 当文本读，顺序影响答案）；回复中按名字索引的对象（如 `answers`）由 New API 按键名排序输出，OpenAI 格式的 `answers` 数组按提问顺序。
+- **同协议直通**：客户端和上游是同一协议族时，请求体原样转发（只换 `model`）；客户端和上游是同一种协议（System One、OpenAI、Gemini）时，回复也原样返回，厂商扩展字段保留，只有 `usage` 换成该协议的标准字段（中转站加在 usage 里的成本、计费来源等不返回给客户端）。
+- **大小**：请求体受 New API 的 `MAX_REQUEST_BODY_MB` 限制；大图片优先用 URL（上游支持时）。
+
+## 请求格式
+
+### TypeSafe System One
+
+字段与 [TypeSafe 官方接口](https://docs.typesafe.ai/api) 一致，校验规则与官方 TypeSafe 插件 1.2.0 相同。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | string | 必填 |
+| `state` | string / object / array | 必填，不能为 null。数组是一组文本值，可混合字符串和对象 |
+| `questions` | object | 必填，键是问题名，值是问题，至少 1 个 |
+| `assets` | object | 可选，图片。键是引用名，写在 state、instructions 或 criteria 的字符串里即代表该图片；每个图片都必须被引用 |
+
+问题：
+
+| `type` | 字段 | 说明 |
+| --- | --- | --- |
+| `noul` | `instructions?`、`criteria?: {true?, false?}` | 是非题，答案为"是"的概率 |
+| `choice` | `instructions?`、`criteria: {选项: 描述或 null}` | 1–255 个选项 |
+| `score` | `instructions?`、`criteria: [等级…]` | 1–10 个等级，从低到高，下标从 0 开始 |
+| `box` | `instructions?` | 在图片中定位，需要 Jev 1.14 |
+
+`instructions`、选项描述、noul 的 true/false 可以是字符串、对象、数组或 null；等级不能为 null。
+
+图片 `assets.<引用>`：`{"type": "image", "format": "png" | "jpg" | "jpeg", "data_base64": "<标准 Base64，无 data: 前缀>"}`，或 multipart 上传时 `{"type": "image", "part": "<文件分段名>"}`。
+
+multipart：第一个分段名为 `request`，内容是上面的 JSON；每张图片一个文件分段，由某个 asset 的 `part` 指向。没被 asset 指向的文件分段会被拒绝。
+
+请求头：
+
+| 请求头 | 作用 |
+| --- | --- |
+| `TypeSafe-Danger-Zone-Long-Context: true` | 转发给 System One 上游，启用约 262K 长上下文；预扣上限相应提高 |
+| `TypeSafe-Danger-Zone-Images` | 不用写，有图片或 Box 题时插件自动加 |
+
+```json
+{
+  "model": "jev-1.14.0",
+  "state": {"ticket": "The mug is broken.", "photo": "9b1c…-uuid"},
+  "questions": {
+    "request": {"type": "choice", "criteria": {"refund": "Wants the money back", "replacement": "Wants a new mug", "other": null}},
+    "severity": {"type": "score", "criteria": ["Minor", "Moderate", "Severe"]},
+    "where": {"type": "box", "instructions": "Where is the crack in `photo`?"}
+  },
+  "assets": {"9b1c…-uuid": {"type": "image", "format": "png", "data_base64": "iVBORw0KGgo…"}}
+}
+```
+
+### OpenRouter
+
+System One 加 OpenRouter 的字段：
+
+| 字段 | 处理 |
+| --- | --- |
+| `provider` | OpenRouter 的路由偏好（含 `max_price`）。上游是 `openrouter` 时转发，其它上游无法遵守，报错 |
+| `session_id`、`trace`、`user` | 上游是 `openrouter` 时转发，其它上游丢弃（只是标记） |
+
+回复多一个 `id`（网关请求 ID），noul 答案带 `confidence`（上游给了时），`usage.input_tokens_details.cached_tokens`（有缓存时）。不返回上游的 `cost`。
+
+### ScaleDown
+
+System One，另外 `state` 可以写成 `{"text": "…"}`，或 `{"document": "<Base64>", "document_mime_type": "application/pdf"}`。文档只能发往 Gemini 上游。
+
+### System One 形状的 /v1/decisions
+
+Perplexity、Inception、Requesty 在 `/v1/decisions` 上用 System One 的形状（`state` + `questions` 对象）。插件按 System One 处理并返回 System One 格式，另外：
+
+- 接受 Perplexity 的 `mode`、`max_staleness`、`user`、`metadata`：发往 System One 族上游时原样转发，由上游校验；`mode`、`max_staleness` 发往其它上游报错，`user`、`metadata` 丢弃。
+- 接受厂商自有的问题类型（如 `locate`、`extract`），但只能发往 System One 族上游，答案原样返回。
+- 错误用 OpenAI 风格 `{"error": {…}}`，与这些厂商一致。
+
+### OpenAI Decisions
+
+字段与 [OpenAI 官方接口](https://developers.openai.com/api/reference/resources/decisions/methods/create) 一致。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | string | 必填 |
+| `input` | string / array | 必填。字符串，或输入项数组 |
+| `questions` | array | 必填，1–400 个，回复按同样顺序 |
+| `prompt_cache_key`、`prompt_cache_options`、`safety_identifier` | | OpenAI 上游原样转发；其它上游丢弃（只影响缓存和风控） |
+| `providerOptions`、`fallbacks` | | Vercel、Bifrost 的扩展。OpenAI 族上游转发，其它上游报错 |
+
+输入项：`{"role": "user", "content": "…" 或 [片段…]}`，片段为 `input_text {text}`、`input_image {image_url: data URL 或 http(s) URL, detail?}`、`input_json {data: 对象或对象数组}`。`developer`、`system`、`assistant` 消息和工具调用项只能发往 OpenAI 上游，其它上游报错。
+
+问题：
+
+| `type` | 字段 | 说明 |
+| --- | --- | --- |
+| `predicate` | `name?`、`instructions` | 陈述为真的概率 |
+| `choice` | `name?`、`instructions`、`choices: [{value: string 或 boolean, description?}]` | 2–255 个，值不能重复 |
+| `score` | `name?`、`instructions`、`levels: [{label, description?}]` | 2–10 个，从低到高 |
+| `box` | `name?`、`instructions` | Vercel、LiteLLM、Bifrost 的扩展 |
+
+`instructions` 必填，可以是字符串或片段数组。`name` 可省略：发往需要名字的上游时插件生成 `question_0`、`question_1`…（不和已有名字冲突），回复里仍是 `null`。
+
+### Gemini Decisions
+
+字段与 [Gemini Decisions 接口参考](https://aistudio.google.com/api-reference/decisions) 一致（Beta）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | string | 必填，可带 `models/` 前缀 |
+| `input` | string / 块 / 块数组 | 必填 |
+| `questions` | object | 必填，键是问题 ID |
+
+块：`{"type": "text", "text"}`；`{"type": "image" | "audio" | "video" | "document", "data": "<Base64>" 或 "uri": "…", "mime_type": "…"}`，可带 `resolution`、`channels`、`sample_rate`、`processing`、`name`（只转发给 Gemini 上游）。
+
+问题：
+
+| `type` | 字段 | 说明 |
+| --- | --- | --- |
+| `noul` | `instructions`、`criteria?: {true_description?, false_description?}` | |
+| `choice` | `instructions`、`criteria: {选项 ID: 描述}` | 2–255 个；ID 非空、无控制字符、首尾无空格 |
+| `score` | `instructions`、`criteria: [等级…]` | 2–255 个非空字符串 |
+
+`instructions` 只能是文本（字符串、文本块或文本块数组）。
+
+### Vercel Evaluation
+
+Vercel AI Gateway 旧接口 `/v1/evaluate`（已被 `/v1/decisions` 取代但仍提供），即 AI SDK 的评估格式：
+
+| 字段 | 说明 |
+| --- | --- |
+| `model` | 必填 |
+| `state` | 字符串、JSON 对象，或片段数组：`{type: "text", text}`、`{type: "json", value}`、`{type: "file", mediaType, data: Base64 / data URL / http(s) URL}` |
+| `questions` | 对象。`type` 为 `boolean`（同 noul，`criteria: {true, false}`）、`choice`、`score`、`box` |
+| `providerOptions` | Vercel 网关选项，只转发给 Vercel 上游，其它上游报错 |
+
+## 回复
+
+成功一律 HTTP 200。
+
+**System One**
+
+```json
+{
+  "model": "jev-1.14.0",
+  "answers": {
+    "wants_refund": {"type": "noul", "noul": 0.81},
+    "request": {"type": "choice", "choice": "refund", "confidence": 0.62, "probabilities": {"refund": 0.81, "replacement": 0.15, "other": 0.04}},
+    "severity": {"type": "score", "score": 1.2, "confidence": 0.55, "legend": {"0": "Minor", "1": "Moderate", "2": "Severe"}, "probabilities": {"0": 0.2, "1": 0.4, "2": 0.4}},
+    "where": {"type": "box", "box": {"top": 0.1, "bottom": 0.5, "left": 0.2, "right": 0.6}, "confidence": null}
+  },
+  "usage": {"input_tokens": 285, "output_tokens": 0}
+}
+```
+
+上游拒答的问题为 `{"type": "refusal"}`（OpenRouter 的写法）。上游没给的 `confidence`、`probabilities` 为 `null`，插件不会编造。
+
+**OpenAI Decisions**
+
+```json
+{
+  "model": "gpt-6-luna",
+  "answers": [
+    {"type": "predicate", "name": "wants_refund", "probability": 0.81},
+    {"type": "choice", "name": "request", "choice": "refund", "probabilities": [{"value": "refund", "probability": 0.81}, {"value": "replacement", "probability": 0.19}], "confidence": 0.62},
+    {"type": "score", "name": "severity", "score": 1.2, "probabilities": [{"value": 0, "label": "Minor", "probability": 0.2}, {"value": 1, "label": "Moderate", "probability": 0.4}, {"value": 2, "label": "Severe", "probability": 0.4}], "confidence": 0.55}
+  ],
+  "usage": {"input_tokens": 300, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}, "output_tokens": 0, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 300}
+}
+```
+
+拒答为 `{"type": "refusal", "name": …}`；Box 为 `{"type": "box", "name", "box": {…}, "confidence"}`。
+
+**Gemini Decisions**
+
+```json
+{
+  "answers": {
+    "wants_refund": {"type": "noul", "noul": 0.81, "confidence": 0.81},
+    "request": {"type": "choice", "choice": "refund", "probabilities": {"refund": 0.81, "replacement": 0.19}, "confidence": 0.81},
+    "severity": {"type": "score", "score": 1.2, "legend": {"0": "Minor", "1": "Moderate", "2": "Severe"}, "probabilities": {"0": 0.2, "1": 0.4, "2": 0.4}, "confidence": 0.4}
+  },
+  "usage": {"total_input_tokens": 300, "total_cached_tokens": 0, "total_output_tokens": 0, "total_thought_tokens": 0, "total_tokens": 300}
+}
+```
+
+上游拒答的问题不出现在 `answers` 里，`prompt_feedback.block_reason` 为 `other`，`block_reason_message` 列出这些问题。
+
+**Vercel Evaluation**
+
+```json
+{
+  "answers": {
+    "wants_refund": {"type": "boolean", "probability": 0.81},
+    "request": {"type": "choice", "choice": "refund", "probabilities": {"refund": 0.81, "replacement": 0.19}},
+    "severity": {"type": "score", "score": 1.2, "probabilities": {"0": 0.2, "1": 0.4, "2": 0.4}}
+  },
+  "usage": {"inputTokens": 300, "outputTokens": 0, "totalTokens": 300},
+  "providerMetadata": {"decision": {"confidence": {"request": 0.62, "severity": 0.55}, "legend": {"severity": {"0": "Minor", "1": "Moderate", "2": "Severe"}}}}
+}
+```
+
+## 上游协议
+
+| `protocol` | 发送 | 密钥头 | 读取的用量 |
+| --- | --- | --- | --- |
+| `systemone` | `{model, state, questions, assets?}`；有图片时 multipart 或 Base64；渠道开了 `fillInstructions` 时，没有指令的问题用问题名作指令 | Bearer；有图片或 Box 时加 `TypeSafe-Danger-Zone-Images: true`；客户端要求时加长上下文头 | `input_tokens`、`output_tokens`、`input_tokens_details.cached_tokens`、`cached_input_tokens` |
+| `openrouter` | 同上，加 `provider`、`session_id`、`trace`、`user` | Bearer | 同上 |
+| `openai` | `{model, input, questions}` | Bearer | `input_tokens`、`input_tokens_details.{cached_tokens, cache_write_tokens}`、`output_tokens`；Bifrost 的 `prompt_tokens`、`completion_tokens` |
+| `gemini` | `{model, input, questions}` | `x-goog-api-key` | `total_input_tokens`、`total_cached_tokens`、`total_output_tokens`、`total_thought_tokens` |
+| `vercel` | `{model, state, questions}`（`boolean` 题型） | Bearer | `inputTokens`、`outputTokens`，或 snake_case |
+| `vercel_sdk` | `{state, questions}`，模型在 `ai-model-id` 头，另加 `ai-evaluation-model-specification-version: 4` 等头 | Bearer | 同上 |
+
+上游回复如果包在 `{result, success}` 里（Cloudflare Workers AI），会先拆开。回复是 200 但带 `error` 对象时按上游错误处理。
+
+## 转换规则
+
+可以无损的原样保留；能可靠对应的做兼容转换；无法表达的报错，不静默丢弃问题、输入、概率或会影响结果的参数，也不编造上游没给的数据。
+
+### 共享输入
+
+| 来源 → 目标 | System One `state` | OpenAI `input` | Gemini `input` | Vercel `state` |
+| --- | --- | --- | --- | --- |
+| 纯文本 | 字符串 | 字符串 | 字符串 | 字符串 |
+| JSON 对象 | 对象 | `[{role: user, content: [input_json]}]` | JSON 文本块 | 对象 |
+| 文本、JSON、图片混合 | 数组；图片变成新的引用（UUID）放进 `assets` | `input_text` / `input_json` / `input_image` 片段 | `text` / 图片块，JSON 写成文本 | 片段数组 |
+| System One 字符串里的图片引用 | 原样 | 拆成文本和图片片段 | 拆成文本和图片块 | 拆成文本和 file 片段 |
+| System One JSON 对象里的图片引用 | 原样 | 报错 | 报错 | 报错 |
+| OpenAI 非 user 消息、工具项 | 报错 | 原样 | 报错 | 报错 |
+
+JSON 转文本的做法与 Vercel 官方迁移指南一致。
+
+### 问题
+
+| 概念 | System One | OpenAI | Gemini | Vercel |
+| --- | --- | --- | --- | --- |
+| 是非题 | `noul` | `predicate` | `noul` | `boolean` |
+| 是非题的真/假说明 | `criteria.true/false` | 追加到 `instructions` 末尾：`true: …` / `false: …`（Vercel 迁移指南的做法） | `true_description` / `false_description` | `criteria.true/false` |
+| 选项 | `criteria` 对象的键 | `choices[].value`（字符串或布尔） | `criteria` 的键 | `criteria` 的键 |
+| 选项说明 | 对象的值（可为对象、null） | `description`（JSON 写成文本，null 省略） | 值（文本，null 写成空串） | 值 |
+| 等级 | `criteria` 数组 | `levels[].label`（来自 OpenAI 的 `description` 写成 `标签: 说明`） | `criteria` 数组（同左） | `criteria` 数组 |
+| 问题名 | 键 | `name`（可省略，自动生成） | 键 | 键 |
+| 指令 | 可省略 | 必填：省略时用问题名，System One 本来就把问题名给模型看 | 必填，同左；只能是文本 | 可省略 |
+
+OpenAI 的布尔选项值发往其它协议时写成 `"true"` / `"false"`，回复时还原成布尔；同一题里同时有 `true` 和 `"true"` 会报错。
+
+### 答案
+
+| 概念 | 说明 |
+| --- | --- |
+| 是非题概率 | System One `noul`、OpenAI `probability`、Gemini `noul`、Vercel `probability`，都是"为真"的概率，直接对应 |
+| 选项概率 | 对象和数组互转，按请求里的选项顺序；选中项按值匹配 |
+| 分数 | 各家都是等级下标的概率加权平均（可为小数），直接对应 |
+| 等级概率 | 按下标对应；`legend` 由请求里的等级生成，`label` 同理 |
+| `confidence` | System One、OpenAI 的 confidence 是厂商自己的统计量，原样转递，没有就为 `null`；Gemini 文档定义 confidence 为 noul 的 max(p, 1−p)、选择和评分的最高概率，所以 Gemini 客户端拿到的是按此定义从概率算出的值 |
+| 拒答 | OpenAI `refusal` ↔ System One `{"type":"refusal"}` ↔ Gemini `prompt_feedback`；Gemini 整体拦截（`block_reason`）在其它协议里每题都是拒答 |
+
+上游少答、答错类型、选了不存在的选项时返回 502，不补答案。
+
+### 用量
+
+统一成"总输入（含缓存读写）、缓存读取、缓存写入、输出、推理"，再按客户端格式输出。计费字段见下文。上游回复没有 usage 时，回复正常返回，计费保留预扣。
+
+## 多模态
+
+| 内容 | 客户端可用格式 | System One 上游 | OpenAI 上游 | Gemini 上游 | Vercel 上游 |
+| --- | --- | --- | --- | --- | --- |
+| 文本 | 全部 | 原生 | 原生 | 原生 | 原生 |
+| JSON | System One、OpenAI、Vercel | 原生 | 原生（`input_json`） | 转成 JSON 文本 | 原生 |
+| 图片 Base64 | 全部 | 原生（PNG、JPEG） | 转 data URL | 原生 | 原生 |
+| 图片 URL | OpenAI、Gemini、Vercel | 不支持（TypeSafe 只收 Base64 和上传） | 原生 | 原生（需能从扩展名得知类型） | 原生 |
+| multipart 文件 | System One | 原样转发分段 | 转 data URL | 转 Base64 | 转 Base64 |
+| 音频、视频 | Gemini、Vercel | 不支持 | 不支持 | 原生 | 取决于 Vercel 路由的模型 |
+| PDF 等文档 | Gemini、Vercel、ScaleDown | 不支持 | 不支持 | 原生 | 同上 |
+| 指令里的图片 | System One、OpenAI | 原生 | 原生 | 不支持 | 不支持 |
+| 选项、等级里的图片 | System One | 原生 | 不支持 | 不支持 | 不支持 |
+| Box 定位 | System One、OpenAI、Vercel | 原生 | 交给上游 | 不支持 | 原生 |
+
+"不支持"都会报 `unsupported_modality` / `unsupported_content` / `unsupported_question_type`，不会把媒体转成文字。
+
+## 数量限制
+
+插件按目标协议检查，超出直接报 `limit_exceeded`（400），**不截断、不拆分**。
+
+| 协议 | 问题数 | 选择题选项 | 评分等级 |
+| --- | --- | --- | --- |
+| System One | 不限（受上下文限制） | 1–255 | 1–10 |
+| OpenAI | 1–400 | 2–255 | 2–10 |
+| Gemini | ≥ 1 | 2–255 | 2–255 |
+| Vercel | 不限 | ≥ 1 | ≥ 1 |
+
+渠道的 `maxQuestions` 可以设更小的上限（如 Bespoke 64、Parallel 100、Telnyx 64）。超出时请客户端分批：New API 任务插件每次提交只能发一个上游请求。
+
+## 错误
+
+错误用客户端协议自己的格式，HTTP 状态码保留：
+
+| 客户端协议 | 格式 |
+| --- | --- |
+| System One、ScaleDown | `{"detail": "…"}`；插件的错误为 `{"detail": {"error_type": "<code>", "message": "…"}}`；上游 TypeSafe 错误原样返回 |
+| OpenRouter | `{"error": {"code": <状态码>, "message": "…"}}` |
+| OpenAI、System One 形状的 `/v1/decisions` | `{"error": {"message", "type", "param", "code"}}`；上游已是这种格式时原样返回 |
+| Gemini | `{"error": {"code", "message", "status"}}` |
+| Vercel | `{"error": {"message", "type"}}` |
+
+插件的错误码：
+
+| code | 状态 | 含义 |
+| --- | --- | --- |
+| `invalid_request` | 400 | 请求不合法 |
+| `unknown_field` | 400 | 该格式没有这个字段 |
+| `unsupported_content` | 400 | 内容结构无法用上游协议表达 |
+| `unsupported_modality` | 400 | 上游不支持这种媒体 |
+| `unsupported_question_type` | 400 | 上游不支持这种题型 |
+| `unsupported_field` | 400 | 会影响结果的厂商字段无法在上游生效 |
+| `limit_exceeded` | 400 | 超出数量限制 |
+| `invalid_model` | 400 | 直接请求了 `decision-custom` |
+| `invalid_config` | 500 | 渠道配置错误（路径、密钥头） |
+| `upstream_invalid` | 502 | 上游回复缺答案或答案不匹配 |
+| `upstream_error` | 502 | 上游 200 回复里带错误 |
+
+上游返回的 4xx/5xx（如 401、429）按原状态码返回，消息取自上游。错误里不会带渠道密钥。没配任务价格时 New API 返回 400 `plugin usage hook failed`。
+
+## 计费字段
+
+| 字段 | 模型 | 含义 |
+| --- | --- | --- |
+| `input_tokens` | 全部 | 输入 token，不含缓存读取和缓存写入 |
+| `cache_read_tokens` | 全部 | 缓存读取 token |
+| `cache_write_tokens` | 全部 | 缓存写入 token |
+| `output_tokens` | 除 `gpt-6-luna` 外 | 输出 token |
+| `long_context` | `gpt-6-luna` 系列 | 总输入超过 272K token |
+
+`gpt-6-luna` 系列指 `gpt-6-luna`、`openai/gpt-6-luna`、`openai/gpt-6-luna-decisions`、`gpt-6-luna-decisions`，以及重定向到它们、或由它们重定向而来的名字。价格表达式和预扣规则见 [README](README.md#计费)。
+
+## 兼容性
+
+2026-11-12 按各家官方文档核对。"已测"指单元测试用严格的模拟上游跑过，核心 3 × 3 和 Vercel 客户端还在隔离的 New API rc.50 上端到端跑过；"真实"指经真实上游（OpenCode、OpenCSG 的 System One 接口）测过。
+
+**核心协议（双向转换，已测）**
+
+| 客户端 \ 上游 | System One | OpenRouter | OpenAI | Gemini | Vercel | Vercel SDK |
+| --- | --- | --- | --- | --- | --- | --- |
+| System One | 已测、真实 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| OpenRouter | 已测、真实 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| OpenAI | 已测、真实 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| Gemini | 已测、真实 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| Vercel | 已测、真实 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| System One 形状 `/v1/decisions` | 已测 | 已测 | 已测 | 已测 | 已测 | 已测 |
+| ScaleDown | 已测 | 已测 | 已测 | 已测 | 已测 | 已测 |
+
+**厂商与入口**
+
+| 厂商 / 入口 | 状态 | 请求格式 | 怎么接 |
+| --- | --- | --- | --- |
+| TypeSafe `api.typesafe.ai/v1/systemone` | 官方 | System One | `systemone` |
+| OpenAI `/v1/decisions` | 官方 | OpenAI | `openai` |
+| Google `generativelanguage.googleapis.com/v1beta/decisions` | 官方 Beta | Gemini | `gemini` |
+| Vercel `/v1/decisions` | 官方 | OpenAI | `openai`，Base URL `https://ai-gateway.vercel.sh` |
+| Vercel `/typesafe/v1/systemone` | 官方 | System One | `systemone`，路径 `/typesafe/v1/systemone` |
+| Vercel `/v1/evaluate` | 官方，已弃用仍可用 | AI SDK 评估格式 | `vercel` |
+| Vercel `/v4/ai/evaluation-model` | SDK 内部接口 | AI SDK 评估格式 | `vercel_sdk` |
+| OpenRouter `/api/alpha/decisions`、`/api/v1/systemone` | 官方（alpha） | System One + 扩展 | `openrouter`，Base URL `https://openrouter.ai` |
+| Azure OpenAI `/openai/v1/decisions` | 官方 | OpenAI | `openai`，路径 `/openai/v1/decisions`，密钥头 `api-key`，模型填部署名 |
+| Microsoft Foundry `/providers/microsoft/v1/systemone` | 官方 Preview | System One | `systemone` + 该路径；用量字段名未公开，按 System One 读取 |
+| Perplexity `/v1/decisions` | 官方 | System One 形状 + 扩展 | `systemone` + 路径 `/v1/decisions`；只用文本（它的图片写法不同） |
+| Liquid AI `/decisions/v1/systemone` | 官方 | System One | `systemone`，Base URL `https://api.liquid.ai/decisions` |
+| Upstage Solar Decide `/v1/systemone` | 官方 Beta，无请求示例 | System One | `systemone` |
+| Bespoke Nimble `/v1/systemone` | 官方 | System One 子集 | `systemone`，`maxQuestions` 64 |
+| SubQ Snap `/v1/systemone` | 官方 | System One，图片放顶层 `images` | `systemone`，只用文本 |
+| Inception Mercury Decide `/v1/decisions` | 官方 | System One 形状 + `extract` | `systemone` + 路径 `/v1/decisions`；`extract` 只能同族直通 |
+| Parallel `/v1/decisions` | 官方 | 无 `model` 字段，按次收费 | 未专门适配；按次价格用 `tier("base", 0.001)` |
+| Databricks System One 路由 | 官方 | System One | `systemone`，路径 `/ai-gateway/typesafe/v1/systemone` |
+| Databricks `/api/2.0/ai-functions/ai-decide` | 官方 Beta | 独立格式，无模型、无用量 | 不支持（无法计费） |
+| ScaleDown `/v1/scaledown` | 官方 | System One + 文档 state | 客户端路由支持；上游用 `systemone` + 路径 `/v1/scaledown`（只发文本） |
+| LiteLLM `/v1/systemone`、`/v1/decisions` | 官方 | System One / OpenAI | `systemone` 或 `openai` |
+| Bifrost `/v1/decisions`、`/openai/v1/decisions` | 官方 | OpenAI，用量为 `prompt_tokens` | `openai` |
+| Cloudflare Workers AI Clef | 官方 | System One，回复外层 `{result}` | `systemone`，路径 `/client/v4/accounts/<ID>/ai/run/@cf/cloudflare/{model}` |
+| Fireworks `/inference/v1/systemone`、`/inference/v1/decisions` | 官方 | System One / OpenAI | 对应协议 + 路径 |
+| Baseten、Telnyx、vLLM、Ollama、Requesty、LLM Gateway、Respan、Eden AI | 官方 | System One 或 OpenAI 形状 | 选对应协议，路径按各家文档 |
+| OpenCode `/inference/systemone` | 第三方 | System One，usage 带自有计费字段 | `systemone`，Base URL `https://opencode.ai/inference/systemone`，真实测过 |
+| OpenCSG AIGateway | 第三方 | System One，每题必须有指令 | `systemone` + `fillInstructions`，Base URL `https://opencsg.com/aigateway`，真实测过 |
+
+用的是"System One + 扩展"的厂商时，只用 System One 标准字段最稳妥；扩展字段在同族直通时原样转发，跨协议时按上面的规则处理。
